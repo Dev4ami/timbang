@@ -1,0 +1,24 @@
+# Timbang. Committed — the API key is not here, it lives in .env (§6).
+
+base_url = "https://9router.dev4ami.my.id"
+# Loopback only. Binding wider would expose the server that holds the key (§6).
+bind = "127.0.0.1:7878"
+
+rounds = 3
+word_limit = 220
+temperature = 0.8
+# Above this, a rebuttal counts as repeating its own previous turn (§4).
+similarity_threshold = 0.55
+
+prompts_dir = "prompts"
+sessions_dir = "sesi"
+
+[models]
+# Pro and Kontra must come from different labs, at comparable tiers (§10): two
+# models from one family share training data and fail together, and two tiers of
+# one family produce a lopsided debate, which misleads worse than a soft one.
+pro = "cc/claude-opus-5"
+kontra = "kr/deepseek-3.2"
+# The moderator only frames and nudges, so its provenance matters less.
+moderator = "cc/claude-haiku-4-5-20251001"
+synthesizer = "cc/claude-opus-5"
