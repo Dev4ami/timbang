@@ -19,7 +19,7 @@ use timbang::config::{ApiKey, Config, Prompts};
 use timbang::engine::Engine;
 use timbang::llm::Client;
 use timbang::render;
-use timbang::transcript::{Penilaian, Session, muat, simpan};
+use timbang::transcript::{Penilaian, Session, SessionStatus, muat, simpan};
 
 #[tokio::main]
 async fn main() {
@@ -111,6 +111,36 @@ async fn jalan() -> anyhow::Result<()> {
             selesai(&s, &cfg.sessions_dir);
         }
 
+        "ulang" => {
+            let id = args.get(1).cloned().unwrap_or_default();
+            if id.is_empty() {
+                anyhow::bail!("pakai: uji ulang <id_sesi>");
+            }
+            let path = cfg.sessions_dir.join(format!("{id}.json"));
+            let mut s = muat(&path).await?;
+
+            // Only stopped sessions. Re-running a finished one would append a
+            // second copy of the later phases, and re-running a waiting one
+            // would skip the framing approval §4 requires.
+            match s.status {
+                SessionStatus::Gagal { at_phase } => {
+                    println!("Melanjutkan dari fase {} ronde {}", at_phase.label(), s.round);
+                }
+                SessionStatus::MenungguPersetujuan => {
+                    anyhow::bail!("sesi ini menunggu persetujuan framing — pakai: uji lanjut {id} <nomor>")
+                }
+                SessionStatus::Selesai => anyhow::bail!("sesi ini sudah selesai"),
+                SessionStatus::Berjalan => {
+                    anyhow::bail!("sesi ini tercatat masih berjalan — pastikan tidak ada proses lain yang memakainya")
+                }
+            }
+
+            println!("Klaim: {}\n", s.claim.as_deref().unwrap_or("(belum ada)"));
+            let eng = mesin(&cfg).await?;
+            eng.jalankan(&mut s).await?;
+            selesai(&s, &cfg.sessions_dir);
+        }
+
         "jalan" => {
             let topik = args.get(1).cloned().unwrap_or_default();
             if topik.is_empty() {
@@ -166,6 +196,7 @@ async fn jalan() -> anyhow::Result<()> {
             println!(
                 "uji framing \"<topik>\" [konteks]   ajukan rumusan klaim, lalu berhenti\n\
                  uji lanjut <id_sesi> <n>          setujui rumusan n, jalankan debat\n\
+                 uji ulang <id_sesi>               lanjutkan sesi yang berhenti di tengah\n\
                  uji jalan \"<topik>\"               framing + pilih #1 otomatis + jalan\n\
                  uji lihat <id_sesi>               cetak sesi tersimpan sebagai markdown\n\
                  uji nilai <id_sesi> <kepakai|setengah|tidak>\n\

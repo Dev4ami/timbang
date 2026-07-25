@@ -78,6 +78,10 @@ impl Engine {
     }
 
     /// Runs every remaining phase to the end, checkpointing after each.
+    ///
+    /// Also the resume path: a session loaded from a `Gagal` checkpoint picks up
+    /// at its stored phase and round, and `jalankan_fase` skips whoever already
+    /// spoke there. §5 promises the user continues rather than starts over.
     pub async fn jalankan(&self, s: &mut Session) -> Result<(), EngineError> {
         if s.claim.is_none() {
             return Err(EngineError::BelumAdaKlaim);
@@ -128,14 +132,16 @@ impl Engine {
         let fase = s.phase;
         let ronde = s.round;
 
-        for (urutan, role) in phase::giliran(fase, ronde).into_iter().enumerate() {
+        // Only the roles that have not spoken yet. On a fresh phase that is all
+        // of them; on a resumed one it is whoever the failure interrupted. The
+        // order index comes from `giliran_tersisa`, which keeps each role's
+        // original position — see the note there.
+        for (urutan, role) in phase::giliran_tersisa(&s.transcript, fase, ronde) {
             let view = build_view(&s.transcript, fase, role, ronde);
             if !view.acts() {
                 continue;
             }
-            let turn = self
-                .satu_turn(s, fase, role, ronde, urutan as u8, &view)
-                .await?;
+            let turn = self.satu_turn(s, fase, role, ronde, urutan, &view).await?;
             (self.on_turn)(&turn);
             s.transcript.push(turn);
         }
@@ -181,10 +187,17 @@ impl Engine {
                 pesan.push(Message::user(t.clone()));
             }
 
-            // Roughly four tokens per word, doubled — the ceiling should never be
-            // what stops a turn, because a truncated argument reads exactly like a
-            // weak one and the debugging goes to the prompt instead.
-            let max_tokens = (self.cfg.word_limit * 8).max(600);
+            // Generous on purpose. Thinking models spend most of their budget
+            // reasoning before writing a word: across 10 test sessions Opus 5
+            // averaged 1572 completion tokens for ~200 words of text while
+            // DeepSeek averaged 481 for the same length. At `word_limit * 8`
+            // that ceiling cut 11 turns — all of them Opus, mid-sentence.
+            //
+            // A ceiling that binds one model and not the other is a lopsided
+            // debate produced by config rather than by argument, which §10 calls
+            // more misleading than a soft one. `max_tokens` is only an upper
+            // bound, so the slack costs nothing for models that stop earlier.
+            let max_tokens = (self.cfg.word_limit * 24).max(2000);
 
             let c = self
                 .client

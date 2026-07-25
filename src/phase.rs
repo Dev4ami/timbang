@@ -42,20 +42,30 @@ pub fn nilai_turn(
         flags.push(TurnFlag::Terpotong);
     }
 
-    // Only rebuttals have to engage. Openings are blind by design, cross-exam
-    // answers respond to a question rather than a claim, and crux turns are
-    // supposed to step back from the fight.
+    // Only rebuttals have a bar to clear. Openings are blind by design,
+    // cross-exam answers respond to a question rather than a claim, and crux
+    // turns are supposed to step back from the fight.
+    //
+    // "Did this turn engage with an opposing claim?" is NOT checked here. A
+    // word-overlap version of that test ran for 10 sessions and flagged exactly
+    // one turn — a rebuttal that quoted the opponent verbatim and demolished it
+    // with Air France 447. It scored 0.093 against a 0.10 threshold while turns
+    // that passed scored 0.118. A verdict decided by two words is a coin flip,
+    // and it failed in the worst direction: punishing cross-domain analogy,
+    // which is the strongest kind of rebuttal there is.
+    //
+    // A wrong flag is worse than no flag. It injects a nudge, burns a request,
+    // and makes the model rewrite an argument that was good. §11 says the
+    // moderator extracting claims is the accurate approach and §9 puts claim
+    // tracking in Tahap 3 — this check was always waiting on claims to exist.
     let mut wajib_ulang = Vec::new();
 
-    if phase == Phase::Rebuttal {
-        if !menyebut_lawan(t, side, teks) {
-            wajib_ulang.push(TurnFlag::GagalMembantah);
-        }
-        if let Some(sebelumnya) = t.turn_ronde_lalu(side, phase, round) {
-            let sim = kemiripan(&sebelumnya.text, teks);
-            if sim > cfg.similarity_threshold {
-                wajib_ulang.push(TurnFlag::MengulangDiri { similarity: sim });
-            }
+    if phase == Phase::Rebuttal
+        && let Some(sebelumnya) = t.turn_ronde_lalu(side, phase, round)
+    {
+        let sim = kemiripan(&sebelumnya.text, teks);
+        if sim > cfg.similarity_threshold {
+            wajib_ulang.push(TurnFlag::MengulangDiri { similarity: sim });
         }
     }
 
@@ -97,29 +107,6 @@ fn jelaskan(flags: &[TurnFlag]) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
-}
-
-/// Does this turn actually engage with something the opponent said?
-///
-/// Claim tracking arrives in Tahap 3; until then this is a content-word overlap
-/// test against the opponent's most recent turn. It is a blunt instrument, and
-/// tuned to be blunt in the forgiving direction: a false "failed to rebut"
-/// injects a nudge that makes a perfectly good debate worse, while a false pass
-/// merely fails to catch one soft turn.
-fn menyebut_lawan(t: &Transcript, side: Side, teks: &str) -> bool {
-    let Some(lawan) = t.last_of_side(side.lawan()) else {
-        // Nobody has spoken for the other side yet — nothing to engage with.
-        return true;
-    };
-    let milik_lawan = kata_isi(&lawan.text);
-    if milik_lawan.is_empty() {
-        return true;
-    }
-    let milikku = kata_isi(teks);
-    let bersama = milik_lawan.iter().filter(|w| milikku.contains(*w)).count();
-    // Roughly a tenth of the opponent's distinctive vocabulary reappearing is
-    // enough to say the turn is talking about the same thing.
-    bersama * 10 >= milik_lawan.len()
 }
 
 /// Jaccard similarity over content-word bigrams.
@@ -165,10 +152,6 @@ fn kata_isi_urut(s: &str) -> Vec<String> {
         .collect()
 }
 
-fn kata_isi(s: &str) -> std::collections::HashSet<String> {
-    kata_isi_urut(s).into_iter().collect()
-}
-
 /// Who acts in this phase, in order.
 ///
 /// The debater order alternates each round because speaking second means seeing
@@ -185,6 +168,22 @@ pub fn giliran(phase: Phase, round: u32) -> Vec<Role> {
         Phase::Sintesis => vec![Role::Synthesizer],
         Phase::Selesai => vec![],
     }
+}
+
+/// Roles that still owe a turn in this (phase, round).
+///
+/// Each is returned with its ORIGINAL index in the speaking order, not its
+/// position in the filtered list. Renumbering here would record a resumed turn
+/// as having spoken first when it actually spoke second — and `speaking_order`
+/// exists precisely so that reading cannot drift when the ordering rule changes
+/// (§4).
+pub fn giliran_tersisa(t: &Transcript, phase: Phase, round: u32) -> Vec<(u8, Role)> {
+    giliran(phase, round)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, role)| !t.sudah_bicara(phase, *role, round))
+        .map(|(i, role)| (i as u8, role))
+        .collect()
 }
 
 /// Whether the two turns of this phase can be issued concurrently.
@@ -269,19 +268,19 @@ mod tests {
     }
 
     #[test]
-    fn rebuttal_yang_tak_menyentuh_lawan_diulang_sekali() {
+    fn mengulang_ronde_lalu_diulang_sekali() {
+        let teks = "Klaim soal kompilasi cepat menyesatkan: goroutine menyembunyikan \
+                    data race yang stdlib Go sendiri tidak mencegah di produksi";
         let mut t = Transcript::default();
-        t.push(turn(Side::Kontra, Phase::Opening, 1,
-            "Go menang karena kompilasi cepat, goroutine sederhana, dan stdlib matang"));
+        t.push(turn(Side::Pro, Phase::Rebuttal, 1, teks));
         let cfg = SessionConfig::uji();
 
-        let p = nilai_turn(&t, &cfg, Phase::Rebuttal, Side::Pro, 1,
-            "Cuaca hari ini cerah sekali dan burung berkicau merdu di pepohonan",
+        let p = nilai_turn(&t, &cfg, Phase::Rebuttal, Side::Pro, 2, teks,
             None, 1, "Ulangi: {alasan}");
 
         match p {
             Putusan::UlangSekali { alasan, .. } => {
-                assert!(alasan.contains(&TurnFlag::GagalMembantah));
+                assert!(alasan.iter().any(|f| matches!(f, TurnFlag::MengulangDiri { .. })));
             }
             lain => panic!("harusnya UlangSekali, dapat {lain:?}"),
         }
@@ -289,28 +288,33 @@ mod tests {
 
     #[test]
     fn gagal_kedua_kali_dicatat_bukan_error() {
+        let teks = "Klaim soal kompilasi cepat menyesatkan: goroutine menyembunyikan \
+                    data race yang stdlib Go sendiri tidak mencegah di produksi";
         let mut t = Transcript::default();
-        t.push(turn(Side::Kontra, Phase::Opening, 1,
-            "Go menang karena kompilasi cepat, goroutine sederhana, dan stdlib matang"));
+        t.push(turn(Side::Pro, Phase::Rebuttal, 1, teks));
         let cfg = SessionConfig::uji();
 
-        let p = nilai_turn(&t, &cfg, Phase::Rebuttal, Side::Pro, 1,
-            "Cuaca hari ini cerah sekali dan burung berkicau merdu di pepohonan",
+        let p = nilai_turn(&t, &cfg, Phase::Rebuttal, Side::Pro, 2, teks,
             None, 2, "Ulangi: {alasan}");
 
         assert!(matches!(p, Putusan::Catat { .. }), "dapat {p:?}");
     }
 
+    /// The regression this whole flag was removed for: a rebuttal that attacks
+    /// through an analogy from another field shares almost no vocabulary with
+    /// its target, and the old overlap test flagged exactly this shape.
     #[test]
-    fn rebuttal_yang_menyerang_lolos() {
+    fn bantahan_lewat_analogi_lintas_domain_lolos() {
         let mut t = Transcript::default();
         t.push(turn(Side::Kontra, Phase::Opening, 1,
-            "Go menang karena kompilasi cepat, goroutine sederhana, dan stdlib matang"));
+            "Tidak ada cara belajar menulis selain memakai AI dalam pengawasan guru, \
+             karena literasi digital menuntut pembiasaan sejak dini"));
         let cfg = SessionConfig::uji();
 
         let p = nilai_turn(&t, &cfg, Phase::Rebuttal, Side::Pro, 1,
-            "Klaim soal kompilasi cepat menyesatkan: goroutine menyembunyikan data race \
-             yang stdlib Go sendiri tidak mencegah, dan itu mahal di produksi",
+            "Penerbangan sudah mengujinya dengan mayat. Air France 447: pitot membeku, \
+             autopilot lepas, tiga pilot berpengalaman gagal mengenali stall. Regulator \
+             justru mewajibkan kembali porsi manual flight operations lewat SAFO 13002",
             None, 1, "Ulangi: {alasan}");
 
         assert_eq!(p, Putusan::Lolos, "dapat {p:?}");
@@ -346,6 +350,50 @@ mod tests {
         assert_eq!(maju(Phase::CrossExamAnswer, 1, 3), Some((Phase::Rebuttal, 2)));
         assert_eq!(maju(Phase::CrossExamAnswer, 3, 3), Some((Phase::Crux, 3)));
         assert_eq!(maju(Phase::Selesai, 1, 3), None);
+    }
+
+    #[test]
+    fn lanjut_tidak_meminta_ulang_turn_yang_sudah_ada() {
+        // Round 1: Pro speaks first. Say the session died right after.
+        let mut t = Transcript::default();
+        t.push(turn(Side::Pro, Phase::Rebuttal, 1, "sudah bicara"));
+
+        let sisa = giliran_tersisa(&t, Phase::Rebuttal, 1);
+        assert_eq!(sisa.len(), 1, "hanya Kontra yang tersisa, dapat {sisa:?}");
+        assert_eq!(sisa[0].1, Role::Debater(Side::Kontra));
+    }
+
+    /// The subtle half of the resume fix: filtering must not renumber.
+    #[test]
+    fn urutan_bicara_tetap_benar_setelah_dilanjutkan() {
+        let mut t = Transcript::default();
+        t.push(turn(Side::Pro, Phase::Rebuttal, 1, "sudah bicara"));
+
+        let sisa = giliran_tersisa(&t, Phase::Rebuttal, 1);
+        assert_eq!(
+            sisa[0].0, 1,
+            "Kontra bicara KEDUA; mencatatnya sebagai 0 membuat transkrip \
+             berbohong soal siapa yang melihat lebih banyak"
+        );
+    }
+
+    #[test]
+    fn fase_yang_sudah_penuh_tidak_menyisakan_giliran() {
+        let mut t = Transcript::default();
+        t.push(turn(Side::Pro, Phase::Rebuttal, 1, "a"));
+        t.push(turn(Side::Kontra, Phase::Rebuttal, 1, "b"));
+
+        assert!(giliran_tersisa(&t, Phase::Rebuttal, 1).is_empty());
+    }
+
+    #[test]
+    fn fase_baru_menyisakan_semua_giliran() {
+        let t = Transcript::default();
+        assert_eq!(giliran_tersisa(&t, Phase::Rebuttal, 1).len(), 2);
+        // Round 2 flips the order, and the indices must flip with it.
+        let sisa = giliran_tersisa(&t, Phase::Rebuttal, 2);
+        assert_eq!(sisa[0], (0, Role::Debater(Side::Kontra)));
+        assert_eq!(sisa[1], (1, Role::Debater(Side::Pro)));
     }
 
     #[test]

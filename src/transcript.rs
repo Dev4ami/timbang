@@ -213,6 +213,17 @@ impl Transcript {
         self.turns.iter().rev().find(|t| t.side() == Some(side))
     }
 
+    /// Has this role already taken its turn in this (phase, round)?
+    ///
+    /// Used when resuming: a session that stopped partway through a phase has
+    /// some of that phase's turns on disk already, and re-asking for them would
+    /// bill twice and leave one side apparently speaking twice in a row.
+    pub fn sudah_bicara(&self, phase: Phase, role: Role, round: u32) -> bool {
+        self.turns
+            .iter()
+            .any(|t| t.phase == phase && t.role == role && t.round == round)
+    }
+
     /// This side's turn in the previous round of the same phase — the baseline
     /// the repetition check compares against (§4).
     pub fn turn_ronde_lalu(&self, side: Side, phase: Phase, round: u32) -> Option<&Turn> {
