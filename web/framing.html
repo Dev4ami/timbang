@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Framing — Timbang</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <h1>TIMBANG</h1>
+  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a></nav>
+</div></header>
+
+<div class="wrap">
+  <h2>Pilih rumusan klaim</h2>
+  <p class="muted">Cara sebuah klaim dirumuskan ikut menentukan siapa yang menang. Tiap rumusan
+  di bawah memiringkan debat ke arah tertentu — dan arah itu ditulis apa adanya supaya kemiringan
+  itu jadi pilihanmu, bukan sesuatu yang diam-diam sudah diputuskan. Pilih satu, atau tulis sendiri.</p>
+
+  <div id="topik" class="muted"></div>
+  <div id="isi" class="notice">Moderator sedang menyusun rumusan…</div>
+</div>
+
+<script>
+const id = location.pathname.split('/')[2];
+
+function render(d) {
+  document.getElementById('topik').innerHTML = '<b>Topik:</b> ' + esc(d.topik);
+  const isi = document.getElementById('isi');
+  isi.className = '';
+  let html = '';
+  d.framing_options.forEach((o, i) => {
+    html += `<label class="opt">
+      <input type="radio" name="pilih" value="${i+1}">
+      <div><div>${esc(o.text)}</div>${o.bias ? '<div class="bias">Bias: '+esc(o.bias)+'</div>' : ''}</div>
+    </label>`;
+  });
+  html += `<label for="sendiri">Atau tulis rumusanmu sendiri</label>
+    <textarea id="sendiri" placeholder="Kosongkan kalau memilih salah satu di atas."></textarea>
+    <div id="err" class="err" style="display:none"></div>
+    <div class="row"><button id="mulai">Mulai debat</button>
+    <span id="busy" class="muted" style="display:none">memulai…</span></div>`;
+  isi.innerHTML = html;
+  document.getElementById('mulai').onclick = mulai;
+}
+
+async function mulai() {
+  const btn = document.getElementById('mulai');
+  const sendiri = document.getElementById('sendiri').value.trim();
+  const picked = document.querySelector('input[name=pilih]:checked');
+  const err = document.getElementById('err');
+  err.style.display = 'none';
+  const body = {};
+  if (sendiri) body.klaim = sendiri;
+  else if (picked) body.pilih = parseInt(picked.value);
+  else { err.textContent = 'Pilih satu rumusan atau tulis sendiri.'; err.style.display = 'block'; return; }
+  btn.disabled = true; document.getElementById('busy').style.display = 'inline';
+  try {
+    const r = await fetch('/api/sesi/' + id + '/mulai', {
+      method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'gagal');
+    location.href = '/sesi/' + id;
+  } catch (e) {
+    err.textContent = e.message; err.style.display = 'block';
+    btn.disabled = false; document.getElementById('busy').style.display = 'none';
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/api/sesi/' + id);
+    const d = await r.json();
+    if (d.status === 'gagal') {
+      document.getElementById('isi').innerHTML = '<div class="err">Framing gagal. Coba mulai sidang baru.</div>';
+      return;
+    }
+    if (d.framing_options && d.framing_options.length) { render(d); return; }
+  } catch (e) {}
+  setTimeout(poll, 1200);
+}
+function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+poll();
+</script>
+</body>
+</html>

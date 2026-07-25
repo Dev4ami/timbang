@@ -4,8 +4,12 @@
 //! their side, phase and round; nothing is summarised, ranked, or scored, and
 //! there is deliberately no "conclusion" section — the reader does that part.
 
-use crate::transcript::{ClaimStatus, Penilaian, Provenance, Session, SessionStatus, TurnFlag};
-use crate::view::{Phase, Role};
+use serde::Serialize;
+
+use crate::transcript::{
+    ClaimStatus, FramingOption, Penilaian, Provenance, Session, SessionStatus, Turn, TurnFlag,
+};
+use crate::view::{Phase, Role, Side};
 
 pub fn sesi_ke_markdown(s: &Session) -> String {
     let mut out = String::new();
@@ -210,4 +214,171 @@ pub fn panjang_per_ronde(s: &Session) -> Vec<(u32, usize, usize)> {
         out.push((r, pro, kontra));
     }
     out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Browser DTOs.
+//
+// These are the ONLY shapes that reach the browser. They carry no key, no base
+// URL, and none of the internal enums — the separation §6 demands, applied to
+// the wire and not just to the config struct. If a field is here, it was chosen
+// to be shown; nothing leaks by being forgotten.
+
+/// One turn, flattened for the two-column view. `side` decides the column;
+/// `phase_key` groups turns into phase headers without the browser knowing the
+/// phase enum.
+#[derive(Serialize, Clone)]
+pub struct WebTurn {
+    pub index: usize,
+    pub side: &'static str,
+    pub role_label: &'static str,
+    pub phase: &'static str,
+    pub phase_key: String,
+    pub round: u32,
+    pub per_ronde: bool,
+    pub text: String,
+    pub word_count: usize,
+    pub flags: Vec<String>,
+    /// Present only when the author cannot be trusted — shown above the turn,
+    /// because that warning is useless after the fact (§5).
+    pub provenance_warning: Option<String>,
+    pub truncated: bool,
+    pub speaking_order: u8,
+}
+
+pub fn turn_web(index: usize, t: &Turn) -> WebTurn {
+    let side = match t.role {
+        Role::Debater(Side::Pro) => "pro",
+        Role::Debater(Side::Kontra) => "kontra",
+        Role::Moderator => "moderator",
+        Role::Synthesizer => "sintesis",
+    };
+    WebTurn {
+        index,
+        side,
+        role_label: t.role.label(),
+        phase: t.phase.label(),
+        phase_key: format!("{:?}-{}", t.phase, t.round),
+        round: t.round,
+        per_ronde: t.phase.per_ronde(),
+        text: t.text.trim().to_string(),
+        word_count: t.word_count(),
+        flags: t.flags.iter().map(flag_label).collect(),
+        provenance_warning: (!t.provenance.trustworthy()).then(|| provenance_label(&t.provenance)),
+        truncated: t.flags.iter().any(|f| matches!(f, TurnFlag::Terpotong)),
+        speaking_order: t.speaking_order,
+    }
+}
+
+/// A whole session as the browser sees it. Meta plus every turn so far, no more.
+///
+/// `status` is a machine key (`menunggu_persetujuan`, `berjalan`, `gagal`,
+/// `selesai`) so the page can branch without parsing prose, and `status_label`
+/// is the Indonesian the user reads.
+#[derive(Serialize)]
+pub struct SessionView {
+    pub id: String,
+    pub topik: String,
+    pub konteks: Option<String>,
+    pub klaim: Option<String>,
+    pub status: &'static str,
+    pub status_label: String,
+    pub phase: &'static str,
+    pub round: u32,
+    pub framing_options: Vec<FramingOption>,
+    pub turns: Vec<WebTurn>,
+    pub penilaian: Option<&'static str>,
+    pub models: ModelsView,
+    pub rounds: u32,
+    pub word_limit: u32,
+}
+
+#[derive(Serialize)]
+pub struct ModelsView {
+    pub pro: String,
+    pub kontra: String,
+    pub moderator: String,
+}
+
+fn status_key(s: &SessionStatus) -> &'static str {
+    match s {
+        SessionStatus::MenungguPersetujuan => "menunggu_persetujuan",
+        SessionStatus::Berjalan => "berjalan",
+        SessionStatus::Gagal { .. } => "gagal",
+        SessionStatus::Selesai => "selesai",
+    }
+}
+
+impl SessionView {
+    /// Build the view straight from a session on disk. Used for finished or
+    /// idle sessions; a live one overrides `turns` and `status` with the
+    /// in-memory backlog, which runs ahead of the per-phase checkpoint.
+    pub fn from_session(s: &Session) -> Self {
+        let turns = s
+            .transcript
+            .all()
+            .iter()
+            .enumerate()
+            .map(|(i, t)| turn_web(i, t))
+            .collect();
+        SessionView {
+            id: s.id.clone(),
+            topik: s.topic.clone(),
+            konteks: s.context.clone(),
+            klaim: s.claim.clone(),
+            status: status_key(&s.status),
+            status_label: status_label(&s.status),
+            phase: s.phase.label(),
+            round: s.round,
+            framing_options: s.framing_options.clone(),
+            turns,
+            penilaian: s.penilaian.map(penilaian_label),
+            models: ModelsView {
+                pro: s.config_used.models.pro.as_str().to_string(),
+                kontra: s.config_used.models.kontra.as_str().to_string(),
+                moderator: s.config_used.models.moderator.as_str().to_string(),
+            },
+            rounds: s.config_used.rounds,
+            word_limit: s.config_used.word_limit,
+        }
+    }
+}
+
+/// A one-line entry for the history list (§7). Carries the diagnostics §8
+/// permits and nothing that measures a winner.
+#[derive(Serialize)]
+pub struct RiwayatEntry {
+    pub id: String,
+    pub topik: String,
+    pub klaim: Option<String>,
+    pub status: &'static str,
+    pub status_label: String,
+    pub created_at: String,
+    pub pro: String,
+    pub kontra: String,
+    pub rounds: u32,
+    pub turns: usize,
+    /// Turns flagged for any reason — a debate-health signal, not a score.
+    pub turns_bertanda: usize,
+    pub penilaian: Option<&'static str>,
+}
+
+impl RiwayatEntry {
+    pub fn from_session(s: &Session) -> Self {
+        let turns_bertanda = s.transcript.all().iter().filter(|t| !t.flags.is_empty()).count();
+        RiwayatEntry {
+            id: s.id.clone(),
+            topik: s.topic.clone(),
+            klaim: s.claim.clone(),
+            status: status_key(&s.status),
+            status_label: status_label(&s.status),
+            created_at: s.created_at.clone(),
+            pro: s.config_used.models.pro.as_str().to_string(),
+            kontra: s.config_used.models.kontra.as_str().to_string(),
+            rounds: s.config_used.rounds,
+            turns: s.transcript.len(),
+            turns_bertanda,
+            penilaian: s.penilaian.map(penilaian_label),
+        }
+    }
 }

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setting — Timbang</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <h1>TIMBANG</h1>
+  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a></nav>
+</div></header>
+
+<div class="wrap">
+  <h2>Setting</h2>
+  <p class="muted">Ini mengubah <i>default</i> untuk sidang berikutnya. Base URL router dan
+  API key tidak bisa diubah dari sini — satu kesalahan di situ bisa mengarahkan request
+  beserta key ke server lain.</p>
+
+  <div class="row" style="margin-top:8px">
+    <button id="tes" class="ghost">Tes koneksi router</button>
+    <span id="tesres" class="muted"></span>
+  </div>
+
+  <div id="form" class="notice">memuat…</div>
+</div>
+
+<script>
+function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+
+async function load() {
+  const d = await (await fetch('/api/setting')).json();
+  document.getElementById('form').className = '';
+  document.getElementById('form').innerHTML = `
+    <label>Base URL router (hanya baca)</label>
+    <input type="text" value="${esc(d.base_url)}" disabled>
+    <label for="pro">Model Pro</label><input type="text" id="pro" value="${esc(d.models.pro)}">
+    <label for="kontra">Model Kontra</label><input type="text" id="kontra" value="${esc(d.models.kontra)}">
+    <label for="moderator">Model Moderator</label><input type="text" id="moderator" value="${esc(d.models.moderator)}">
+    <label for="synthesizer">Model Synthesizer</label><input type="text" id="synthesizer" value="${esc(d.models.synthesizer)}">
+    <label for="rounds">Jumlah ronde</label><input type="number" id="rounds" value="${d.rounds}" min="1" max="10">
+    <label for="word_limit">Batas kata per giliran</label><input type="number" id="word_limit" value="${d.word_limit}" min="50" max="1000">
+    <label for="temperature">Temperature</label><input type="number" id="temperature" value="${d.temperature}" min="0" max="2" step="0.1">
+    <div id="err" class="err" style="display:none"></div>
+    <div class="row"><button id="simpan">Simpan default</button><span id="ok" class="muted"></span></div>`;
+  document.getElementById('simpan').onclick = simpan;
+}
+
+async function simpan() {
+  const err = document.getElementById('err'); err.style.display = 'none';
+  const body = {
+    models: {
+      pro: val('pro'), kontra: val('kontra'),
+      moderator: val('moderator'), synthesizer: val('synthesizer')
+    },
+    rounds: parseInt(val('rounds')),
+    word_limit: parseInt(val('word_limit')),
+    temperature: parseFloat(val('temperature'))
+  };
+  const r = await fetch('/api/setting', {
+    method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body)
+  });
+  const d = await r.json();
+  if (!r.ok) { err.textContent = d.error || 'gagal'; err.style.display = 'block'; return; }
+  document.getElementById('ok').textContent = 'tersimpan';
+  setTimeout(() => document.getElementById('ok').textContent = '', 2000);
+}
+function val(id){ return document.getElementById(id).value.trim(); }
+
+document.getElementById('tes').onclick = async () => {
+  const res = document.getElementById('tesres');
+  res.textContent = 'menghubungi…';
+  try {
+    const d = await (await fetch('/api/sehat')).json();
+    res.textContent = d.ok ? '✓ router hidup' : ('✗ ' + (d.pesan || 'tidak ok'));
+    res.style.color = d.ok ? '#2b5e2b' : '#7a2e2e';
+  } catch (e) { res.textContent = '✗ ' + e.message; res.style.color = '#7a2e2e'; }
+};
+
+load();
+</script>
+</body>
+</html>

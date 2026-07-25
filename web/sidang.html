@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidang — Timbang</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <h1>TIMBANG</h1>
+  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a></nav>
+</div></header>
+
+<div class="wrap">
+  <div id="head"></div>
+  <div id="fasestrip" class="fasestrip"></div>
+  <div id="body"><div class="notice">memuat…</div></div>
+
+  <details class="panel">
+    <summary>Sintesis &amp; crux — dibuka manual</summary>
+    <p class="muted">Panel ini sengaja tertutup sampai seluruh debat selesai, dan tidak terbuka
+    sendiri. Kalau ringkasan muncul di atas, seluruh transkrip jadi hiasan. Sintesis belum
+    dijalankan pada tahap ini.</p>
+  </details>
+</div>
+
+<script>
+const id = location.pathname.split('/')[2];
+const FASE = ['Framing','Opening','Rebuttal','Cross-exam: bertanya','Cross-exam: menjawab','Crux','Sintesis','Selesai'];
+const turns = new Map();   // index -> turn
+let meta = null;
+
+function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+
+function head() {
+  const h = document.getElementById('head');
+  const klaim = meta.klaim || meta.topik;
+  h.innerHTML = `<div class="klaim">${esc(klaim)}</div>
+    <div class="meta">
+      <span class="status-pill status-${meta.status}">${esc(meta.status_label)}</span>
+      <span>Pro <code>${esc(meta.models.pro)}</code></span>
+      <span>Kontra <code>${esc(meta.models.kontra)}</code></span>
+      <span>${meta.rounds} ronde</span>
+    </div>`;
+  const strip = document.getElementById('fasestrip');
+  const active = new Set([...turns.values()].map(t => t.phase));
+  strip.innerHTML = FASE.map(f => `<span class="${active.has(f)?'on':''}">${f}</span>`).join('');
+}
+
+function render() {
+  head();
+  const body = document.getElementById('body');
+  const list = [...turns.values()].sort((a,b) => a.index - b.index);
+  if (!list.length) { body.innerHTML = '<div class="notice">menunggu giliran pertama…</div>'; return; }
+
+  // Group consecutive turns by (phase, round). Moderator/sintesis render full
+  // width; debaters split into two opposing columns.
+  let html = '', curKey = null;
+  const groups = [];
+  list.forEach(t => {
+    if (t.phase_key !== curKey) { groups.push({ key: t.phase_key, phase: t.phase, round: t.round, per: t.per_ronde, turns: [] }); curKey = t.phase_key; }
+    groups[groups.length-1].turns.push(t);
+  });
+
+  groups.forEach(g => {
+    const title = g.per ? `${g.phase} · ronde ${g.round}` : g.phase;
+    html += `<section class="fase"><h3>${esc(title)}</h3>`;
+    const full = g.turns.filter(t => t.side==='moderator' || t.side==='sintesis');
+    const pro = g.turns.filter(t => t.side==='pro');
+    const kontra = g.turns.filter(t => t.side==='kontra');
+    full.forEach(t => html += card(t, 'full'));
+    if (pro.length || kontra.length) {
+      html += `<div class="cols">
+        <div class="col pro"><div class="colhead">PRO</div>${pro.map(t=>card(t,'pro')).join('')}</div>
+        <div class="col kontra"><div class="colhead">KONTRA</div>${kontra.map(t=>card(t,'kontra')).join('')}</div>
+      </div>`;
+    }
+    html += `</section>`;
+  });
+  body.innerHTML = html;
+}
+
+function card(t, cls) {
+  let w = '';
+  if (t.provenance_warning) w += `<div class="warn">⚠ ${esc(t.provenance_warning)}</div>`;
+  (t.flags||[]).forEach(f => w += `<div class="flag">⚑ ${esc(f)}</div>`);
+  return `<div class="turn ${cls}">${w}<div class="text">${esc(t.text)}</div>
+    <div class="foot">${t.word_count} kata${t.truncated?' · terpotong':''}</div></div>`;
+}
+
+function addTurn(t){ turns.set(t.index, t); render(); }
+
+async function load() {
+  const r = await fetch('/api/sesi/' + id);
+  if (!r.ok) { document.getElementById('body').innerHTML = '<div class="err">Sesi tidak ditemukan.</div>'; return; }
+  meta = await r.json();
+  if (meta.status === 'menunggu_persetujuan') { location.href = '/sesi/' + id + '/framing'; return; }
+  (meta.turns||[]).forEach(addTurn);
+  render();
+  if (meta.status === 'berjalan') listen();
+}
+
+function listen() {
+  // EventSource carries Last-Event-ID automatically on reconnect, so a dropped
+  // connection resumes from the last turn seen — no missed or doubled turns.
+  const es = new EventSource('/sesi/' + id + '/stream');
+  es.addEventListener('turn', e => addTurn(JSON.parse(e.data)));
+  es.addEventListener('selesai', () => { es.close(); meta.status='selesai'; meta.status_label='selesai'; render(); });
+  es.addEventListener('gagal', e => { es.close(); meta.status='gagal'; meta.status_label='berhenti — bisa dilanjutkan'; render(); });
+}
+
+load();
+</script>
+</body>
+</html>

@@ -168,6 +168,14 @@ impl Transcript {
         self.turns.iter().collect()
     }
 
+    pub fn get(&self, i: usize) -> Option<&Turn> {
+        self.turns.get(i)
+    }
+
+    pub fn last(&self) -> Option<&Turn> {
+        self.turns.last()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.turns.is_empty()
     }

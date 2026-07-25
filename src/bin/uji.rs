@@ -220,7 +220,7 @@ async fn mesin(cfg: &Config) -> anyhow::Result<Engine> {
         prompts,
         sessions_dir: cfg.sessions_dir.clone(),
         // Printing each turn as it lands is the whole point of this binary.
-        on_turn: Box::new(|t| println!("\n{}", render::turn_ringkas(t))),
+        on_turn: Box::new(|_idx, t| println!("\n{}", render::turn_ringkas(t))),
     })
 }
 

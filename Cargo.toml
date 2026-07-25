@@ -3,9 +3,7 @@ name = "timbang"
 version = "0.1.0"
 edition = "2024"
 
-# One library, thin binaries (§2). bin/web arrives in Tahap 2 — adding it now
-# would mean working two stages at once, and a failure could no longer be traced
-# to one of them (§9).
+# One library, thin binaries (§2).
 [lib]
 name = "timbang"
 path = "src/lib.rs"
@@ -14,10 +12,18 @@ path = "src/lib.rs"
 name = "uji"
 path = "src/bin/uji.rs"
 
+[[bin]]
+name = "web"
+path = "src/bin/web.rs"
+
 [dependencies]
 # Async from the start: bin/web needs it for SSE and background tasks (§7), and
 # retrofitting it later would reshape every signature in llm and phase.
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs", "time"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs", "time", "sync"] }
+axum = "0.8.9"
+tokio-stream = { version = "0.1.17", features = ["sync"] }
+futures-util = "0.3.31"
+async-stream = "0.3.6"
 # "rustls" — the feature was renamed from "rustls-tls" in reqwest 0.13.
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }

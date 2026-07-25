@@ -19,10 +19,15 @@ pub struct Engine {
     pub cfg: Config,
     pub prompts: Prompts,
     pub sessions_dir: PathBuf,
-    /// Where per-turn progress goes. `bin/uji` prints to stdout; `bin/web` will
-    /// push to SSE (Tahap 2).
-    pub on_turn: Box<dyn Fn(&Turn) + Send + Sync>,
+    /// Where per-turn progress goes, with the turn's index in the transcript.
+    /// `bin/uji` prints to stdout; `bin/web` pushes to a broadcast channel keyed
+    /// by that index so a reconnecting browser can ask for turns it missed.
+    pub on_turn: OnTurn,
 }
+
+/// A per-turn progress sink. Boxed so the two binaries can plug in different
+/// destinations (stdout, an SSE broadcast) behind the same engine.
+pub type OnTurn = Box<dyn Fn(usize, &Turn) + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -72,7 +77,8 @@ impl Engine {
             Vec::new(),
         ));
         s.status = SessionStatus::MenungguPersetujuan;
-        (self.on_turn)(s.transcript.all().last().unwrap());
+        let idx = s.transcript.len() - 1;
+        (self.on_turn)(idx, s.transcript.get(idx).unwrap());
         simpan(s, &self.sessions_dir).await?;
         Ok(())
     }
@@ -142,7 +148,8 @@ impl Engine {
                 continue;
             }
             let turn = self.satu_turn(s, fase, role, ronde, urutan, &view).await?;
-            (self.on_turn)(&turn);
+            let idx = s.transcript.len();
+            (self.on_turn)(idx, &turn);
             s.transcript.push(turn);
         }
         Ok(())

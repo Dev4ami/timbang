@@ -19,6 +19,9 @@ sessions_dir = "sesi"
 # one family produce a lopsided debate, which misleads worse than a soft one.
 pro = "cc/claude-opus-5"
 kontra = "kr/deepseek-3.2"
-# The moderator only frames and nudges, so its provenance matters less.
-moderator = "cc/claude-haiku-4-5-20251001"
+# The moderator only frames and nudges, so its provenance matters less. On the
+# kr/ route because cc/claude-haiku-4-5-20251001 began rejecting requests with
+# "authentication style incompatible with the long context beta header" — a cc/
+# quirk that does not touch cc/claude-opus-5 or cc/claude-sonnet-5.
+moderator = "kr/claude-haiku-4.5"
 synthesizer = "cc/claude-opus-5"

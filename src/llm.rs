@@ -41,10 +41,15 @@ impl Message {
     }
 }
 
+/// Cloneable: `reqwest::Client` shares one connection pool across clones, and
+/// the key is behind an `Arc` so the web server can hand a client to each
+/// background debate task without re-reading or copying the secret. `Arc<ApiKey>`
+/// keeps §6's rule intact — the key is still only reachable through this module.
+#[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     base_url: String,
-    key: ApiKey,
+    key: std::sync::Arc<ApiKey>,
 }
 
 impl std::fmt::Debug for Client {
@@ -68,7 +73,7 @@ impl Client {
         Ok(Client {
             http,
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            key,
+            key: std::sync::Arc::new(key),
         })
     }
 

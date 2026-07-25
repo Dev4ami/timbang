@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riwayat — Timbang</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <h1>TIMBANG</h1>
+  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a></nav>
+</div></header>
+
+<div class="wrap">
+  <h2>Riwayat sidang</h2>
+  <p class="muted">Daftar sidang, config yang dipakai, dan kolom diagnostik. Tidak ada angka
+  kemenangan di sini — yang diukur perilaku sistem, bukan siapa yang unggul.</p>
+  <div id="isi"><div class="notice">memuat…</div></div>
+</div>
+
+<script>
+function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+async function load() {
+  const r = await fetch('/api/riwayat');
+  const list = await r.json();
+  const isi = document.getElementById('isi');
+  if (!list.length) { isi.innerHTML = '<div class="notice">Belum ada sidang. <a href="/">Mulai satu.</a></div>'; return; }
+  let html = `<table><thead><tr>
+    <th>Topik / klaim</th><th>Status</th><th>Pro vs Kontra</th>
+    <th>Ronde</th><th>Turn</th><th>Bertanda</th><th>Mulai</th></tr></thead><tbody>`;
+  list.forEach(s => {
+    html += `<tr>
+      <td><a href="/sesi/${s.id}">${esc(s.klaim || s.topik)}</a></td>
+      <td><span class="tag">${esc(s.status_label)}</span></td>
+      <td><code>${esc(s.pro)}</code> vs <code>${esc(s.kontra)}</code></td>
+      <td>${s.rounds}</td>
+      <td>${s.turns}</td>
+      <td>${s.turns_bertanda}</td>
+      <td>${esc((s.created_at||'').slice(0,16).replace('T',' '))}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  isi.innerHTML = html;
+}
+load();
+</script>
+</body>
+</html>

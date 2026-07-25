@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidang baru — Timbang</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <h1>TIMBANG</h1>
+  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a></nav>
+</div></header>
+
+<div class="wrap">
+  <h2>Mulai sidang baru</h2>
+  <p class="muted">Dua model berdebat pro–kontra atas satu klaim. Kamu menuliskan topiknya
+  di sini; setelah ini moderator mengajukan beberapa rumusan klaim untuk kamu pilih.
+  Ini satu-satunya tempat kamu mengetik — begitu debat jalan, tidak ada lagi kolom masukan.</p>
+
+  <label for="topik">Topik yang ingin diperdebatkan</label>
+  <textarea id="topik" placeholder="Contoh: Apakah tim kecil sebaiknya memakai microservice atau monolit?"></textarea>
+
+  <label for="konteks">Konteks fakta (opsional)</label>
+  <textarea id="konteks" placeholder="Batasan, angka, atau situasi spesifik yang perlu dipertimbangkan kedua sisi."></textarea>
+
+  <div id="err" class="err" style="display:none"></div>
+  <div class="row">
+    <button id="go">Minta rumusan klaim</button>
+    <span id="busy" class="muted" style="display:none">menghubungi moderator…</span>
+  </div>
+</div>
+
+<script>
+const go = document.getElementById('go');
+go.onclick = async () => {
+  const topik = document.getElementById('topik').value.trim();
+  const konteks = document.getElementById('konteks').value.trim();
+  const err = document.getElementById('err');
+  err.style.display = 'none';
+  if (!topik) { err.textContent = 'Topik masih kosong.'; err.style.display = 'block'; return; }
+  go.disabled = true;
+  document.getElementById('busy').style.display = 'inline';
+  try {
+    const r = await fetch('/api/baru', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({ topik, konteks })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'gagal');
+    location.href = '/sesi/' + d.id + '/framing';
+  } catch (e) {
+    err.textContent = e.message; err.style.display = 'block';
+    go.disabled = false; document.getElementById('busy').style.display = 'none';
+  }
+};
+</script>
+</body>
+</html>
