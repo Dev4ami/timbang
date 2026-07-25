@@ -96,6 +96,9 @@ button:disabled { opacity: .5; cursor: default; }
 .turn .flag { background: #f2ede1; color: var(--warn); font-size: 12px; padding: 4px 9px; border-radius: 3px; margin-bottom: 6px; display: inline-block; }
 .turn.full { max-width: 760px; margin: 0 auto; }
 
+.endmark { text-align: center; color: var(--muted); font-size: 14px; margin: 30px 0 6px; padding: 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.endmark.gagal { color: var(--kontra); }
+
 details.panel { margin-top: 30px; border: 1px dashed var(--line); border-radius: 4px; padding: 6px 16px; background: #fbf9f5; }
 details.panel summary { cursor: pointer; font-size: 15px; color: var(--muted); padding: 8px 0; }
 

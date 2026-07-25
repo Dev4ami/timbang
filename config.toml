@@ -17,11 +17,11 @@ sessions_dir = "sesi"
 # Pro and Kontra must come from different labs, at comparable tiers (§10): two
 # models from one family share training data and fail together, and two tiers of
 # one family produce a lopsided debate, which misleads worse than a soft one.
-pro = "cc/claude-opus-5"
+pro = "cc/claude-opus-4-7"
 kontra = "kr/deepseek-3.2"
 # The moderator only frames and nudges, so its provenance matters less. On the
 # kr/ route because cc/claude-haiku-4-5-20251001 began rejecting requests with
 # "authentication style incompatible with the long context beta header" — a cc/
-# quirk that does not touch cc/claude-opus-5 or cc/claude-sonnet-5.
+# quirk that does not touch cc/claude-opus-4-7.
 moderator = "kr/claude-haiku-4.5"
-synthesizer = "cc/claude-opus-5"
+synthesizer = "cc/claude-opus-4-7"

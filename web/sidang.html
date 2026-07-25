@@ -78,6 +78,18 @@ function render() {
     }
     html += `</section>`;
   });
+
+  // An explicit end marker so a finished debate does not read as truncated. The
+  // debate currently ends at Crux — synthesis is deliberately not run yet (§1:
+  // no summary before the transcript has been read), which is why the last
+  // phase is Crux and not a conclusion.
+  if (meta.status === 'selesai') {
+    html += `<div class="endmark">◆ Debat selesai — argumen berhenti di Crux.
+      Sintesis belum dijalankan pada tahap ini.</div>`;
+  } else if (meta.status === 'gagal') {
+    html += `<div class="endmark gagal">■ Sesi berhenti di tengah. Transkrip sampai sini aman;
+      sesi bisa dilanjutkan.</div>`;
+  }
   body.innerHTML = html;
 }
 
