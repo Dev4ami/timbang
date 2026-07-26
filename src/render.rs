@@ -53,6 +53,16 @@ pub fn sesi_ke_markdown(s: &Session) -> String {
             out.push_str(&format!("> ⚑ {}\n\n", flag_label(f)));
         }
 
+        // What this turn attacked, or a visible note that it engaged nothing —
+        // a debater turn talking only to itself is exactly what §7 wants legible.
+        if t.role.side().is_some() && t.phase == Phase::Rebuttal {
+            if t.attacks.is_empty() {
+                out.push_str("> → tidak menyerang klaim mana pun\n\n");
+            } else {
+                out.push_str(&format!("> → menyerang {}\n\n", t.attacks.join(", ")));
+            }
+        }
+
         out.push_str(t.text.trim());
         out.push_str("\n\n");
 
@@ -244,6 +254,11 @@ pub struct WebTurn {
     pub provenance_warning: Option<String>,
     pub truncated: bool,
     pub speaking_order: u8,
+    /// Ids of opposing claims this turn attacked (§3). Empty means the turn
+    /// engaged nothing — the "talking to itself" signal §7 wants visible at a
+    /// glance, so the browser renders the *absence* of a chip, not just its
+    /// presence.
+    pub attacks: Vec<String>,
 }
 
 pub fn turn_web(index: usize, t: &Turn) -> WebTurn {
@@ -267,7 +282,58 @@ pub fn turn_web(index: usize, t: &Turn) -> WebTurn {
         provenance_warning: (!t.provenance.trustworthy()).then(|| provenance_label(&t.provenance)),
         truncated: t.flags.iter().any(|f| matches!(f, TurnFlag::Terpotong)),
         speaking_order: t.speaking_order,
+        attacks: t.attacks.clone(),
     }
+}
+
+/// One claim, for the session page's status panel (§7). `unanswered` is carried
+/// as its own flag rather than left for the browser to infer, because the panel
+/// marks unanswered claims hardest — the inversion §7 asks for, where what
+/// nobody answered outranks what was resolved.
+#[derive(Serialize, Clone)]
+pub struct ClaimView {
+    pub id: String,
+    pub side: &'static str,
+    pub owner_label: &'static str,
+    pub text: String,
+    pub status: &'static str,
+    pub status_label: &'static str,
+    pub unanswered: bool,
+    pub born_round: u32,
+}
+
+pub fn claim_view(c: &crate::transcript::Claim) -> ClaimView {
+    let side = match c.owner {
+        Side::Pro => "pro",
+        Side::Kontra => "kontra",
+    };
+    ClaimView {
+        id: c.id.clone(),
+        side,
+        owner_label: c.owner.label(),
+        text: c.text.clone(),
+        status: claim_status_key(c.status),
+        status_label: claim_status_label(c.status),
+        unanswered: c.status == ClaimStatus::Hidup,
+        born_round: c.born_round,
+    }
+}
+
+fn claim_status_key(s: ClaimStatus) -> &'static str {
+    match s {
+        ClaimStatus::Hidup => "hidup",
+        ClaimStatus::Terbantah => "terbantah",
+        ClaimStatus::Diabaikan => "diabaikan",
+    }
+}
+
+/// Claims ordered for the panel: unanswered (`Hidup`) first, then the rest in
+/// birth order (§7). Sorting here rather than in the browser keeps the "what was
+/// never answered comes first" rule in one place and out of the template.
+fn klaim_terurut(s: &Session) -> Vec<ClaimView> {
+    let mut v: Vec<&crate::transcript::Claim> = s.claims.iter().collect();
+    v.sort_by_key(|c| (c.status != ClaimStatus::Hidup, c.born_round));
+    v.into_iter().map(claim_view).collect()
 }
 
 /// A whole session as the browser sees it. Meta plus every turn so far, no more.
@@ -287,6 +353,9 @@ pub struct SessionView {
     pub round: u32,
     pub framing_options: Vec<FramingOption>,
     pub turns: Vec<WebTurn>,
+    /// Every tracked claim, unanswered ones first (§3, §7). The panel leads with
+    /// what nobody answered because that is the whole reason the tool exists.
+    pub claims: Vec<ClaimView>,
     pub penilaian: Option<&'static str>,
     pub models: ModelsView,
     pub rounds: u32,
@@ -332,6 +401,7 @@ impl SessionView {
             round: s.round,
             framing_options: s.framing_options.clone(),
             turns,
+            claims: klaim_terurut(s),
             penilaian: s.penilaian.map(penilaian_label),
             models: ModelsView {
                 pro: s.config_used.models.pro.as_str().to_string(),
@@ -360,12 +430,18 @@ pub struct RiwayatEntry {
     pub turns: usize,
     /// Turns flagged for any reason — a debate-health signal, not a score.
     pub turns_bertanda: usize,
+    /// Total tracked claims, and how many were never answered by anyone (§8:
+    /// a high unanswered ratio across all sessions means the rebuttal phase is
+    /// not binding — an observation with an action, not a winner's tally).
+    pub klaim_total: usize,
+    pub klaim_sepi: usize,
     pub penilaian: Option<&'static str>,
 }
 
 impl RiwayatEntry {
     pub fn from_session(s: &Session) -> Self {
         let turns_bertanda = s.transcript.all().iter().filter(|t| !t.flags.is_empty()).count();
+        let klaim_sepi = s.claims.iter().filter(|c| c.status == ClaimStatus::Hidup).count();
         RiwayatEntry {
             id: s.id.clone(),
             topik: s.topic.clone(),
@@ -378,6 +454,8 @@ impl RiwayatEntry {
             rounds: s.config_used.rounds,
             turns: s.transcript.len(),
             turns_bertanda,
+            klaim_total: s.claims.len(),
+            klaim_sepi,
             penilaian: s.penilaian.map(penilaian_label),
         }
     }

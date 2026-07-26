@@ -253,6 +253,11 @@ pub struct Prompts {
     pub synthesizer: String,
     /// Injected when a turn misses its phase's bar (§4).
     pub teguran: String,
+    /// Run by the moderator after each debater turn to track claims (§3, §11):
+    /// which claims are new, which opposing claims this turn attacked, which of
+    /// its own it abandoned. A separate request per turn — the accurate approach
+    /// §11 recommends over asking debaters to number their own claims.
+    pub ekstraksi: String,
 }
 
 impl Prompts {
@@ -269,6 +274,7 @@ impl Prompts {
             moderator: baca(dir, "moderator.md").await?,
             synthesizer: baca(dir, "synthesizer.md").await?,
             teguran: baca(dir, "teguran.md").await?,
+            ekstraksi: baca(dir, "ekstraksi.md").await?,
         })
     }
 

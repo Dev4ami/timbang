@@ -69,6 +69,15 @@ impl Role {
             Role::Synthesizer => "Sintesis",
         }
     }
+
+    /// The side this role argues for, or `None` for the non-debating roles.
+    /// Only debaters make claims, so claim tracking keys off this.
+    pub fn side(self) -> Option<Side> {
+        match self {
+            Role::Debater(s) => Some(s),
+            Role::Moderator | Role::Synthesizer => None,
+        }
+    }
 }
 
 /// The phases, in order (§4).

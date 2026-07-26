@@ -89,6 +89,12 @@ pub struct Turn {
     /// changing the ordering rule cannot rewrite the meaning of old sessions.
     pub speaking_order: u8,
     pub flags: Vec<TurnFlag>,
+    /// Ids of opposing claims this turn attacked, as judged by the moderator's
+    /// extraction pass (§3). Drives the "→ menyerang K5" chip; a turn with an
+    /// empty list is one that engaged nothing, which §7 wants visible at a
+    /// glance. `serde(default)` so sessions written before Tahap 3 still load.
+    #[serde(default)]
+    pub attacks: Vec<String>,
 }
 
 impl Turn {
@@ -378,6 +384,7 @@ mod tests {
             retries: 0,
             speaking_order: order,
             flags: Vec::new(),
+            attacks: Vec::new(),
         }
     }
 

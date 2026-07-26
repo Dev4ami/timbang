@@ -242,6 +242,7 @@ mod tests {
             retries: 0,
             speaking_order: 0,
             flags: vec![],
+            attacks: vec![],
         }
     }
 

@@ -220,7 +220,7 @@ async fn mesin(cfg: &Config) -> anyhow::Result<Engine> {
         prompts,
         sessions_dir: cfg.sessions_dir.clone(),
         // Printing each turn as it lands is the whole point of this binary.
-        on_turn: Box::new(|_idx, t| println!("\n{}", render::turn_ringkas(t))),
+        on_turn: Box::new(|_idx, t, _claims| println!("\n{}", render::turn_ringkas(t))),
     })
 }
 
@@ -255,6 +255,21 @@ fn selesai(s: &Session, dir: &Path) {
                 t.phase.label(),
                 t.flags
             );
+        }
+    }
+
+    // Claim tracking (§3). The unanswered ones lead — the whole reason the tool
+    // exists is to surface arguments nobody ever answered.
+    if s.claims.is_empty() {
+        println!("\nTidak ada klaim terlacak.");
+    } else {
+        let sepi = s.tak_pernah_dijawab();
+        println!("\n{} klaim terlacak, {} tak pernah dijawab:", s.claims.len(), sepi.len());
+        for c in &sepi {
+            println!("  ⚑ {} ({}, ronde {}): {}", c.id, c.owner.label(), c.born_round, c.text);
+        }
+        for c in s.claims.iter().filter(|c| !sepi.iter().any(|x| x.id == c.id)) {
+            println!("    {} ({}): {}", c.id, c.owner.label(), c.text);
         }
     }
 }

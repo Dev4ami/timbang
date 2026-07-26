@@ -28,8 +28,11 @@ async function load() {
   if (!list.length) { isi.innerHTML = '<div class="notice">Belum ada sidang. <a href="/">Mulai satu.</a></div>'; return; }
   let html = `<table><thead><tr>
     <th>Topik / klaim</th><th>Status</th><th>Pro vs Kontra</th>
-    <th>Ronde</th><th>Turn</th><th>Bertanda</th><th>Mulai</th></tr></thead><tbody>`;
+    <th>Ronde</th><th>Turn</th><th>Bertanda</th>
+    <th title="klaim tak pernah dijawab / total klaim terlacak — rasio tinggi di semua sesi berarti fase rebuttal kurang mengikat (§8)">Klaim sepi</th>
+    <th>Mulai</th></tr></thead><tbody>`;
   list.forEach(s => {
+    const sepi = (s.klaim_total ? `${s.klaim_sepi}/${s.klaim_total}` : '—');
     html += `<tr>
       <td><a href="/sesi/${s.id}">${esc(s.klaim || s.topik)}</a></td>
       <td><span class="tag">${esc(s.status_label)}</span></td>
@@ -37,6 +40,7 @@ async function load() {
       <td>${s.rounds}</td>
       <td>${s.turns}</td>
       <td>${s.turns_bertanda}</td>
+      <td class="${s.klaim_sepi ? 'sepi' : ''}">${sepi}</td>
       <td>${esc((s.created_at||'').slice(0,16).replace('T',' '))}</td>
     </tr>`;
   });

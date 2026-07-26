@@ -114,6 +114,46 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
 th { color: var(--muted); font-weight: normal; font-size: 13px; }
 td code { font-size: 12px; color: var(--muted); }
 .tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: #ece8e0; color: var(--muted); }
+/* A session where claims went unanswered — a debate-health flag, not a score. */
+td.sepi { color: var(--warn); font-weight: bold; }
+
+/* ── attack chips (§7) ── */
+.chips { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  font-size: 12px; padding: 2px 9px; border-radius: 12px;
+  background: #eef2ee; color: #2b5e2b; border: 1px solid #cfe0cf;
+}
+/* A rebuttal that attacked nothing — a side talking to itself. Marked, not
+   hidden: this is the softness the tool exists to make visible (§7). */
+.chip.sepi { background: var(--warnbg); color: var(--warn); border-color: #e6d29a; font-style: italic; }
+
+/* ── claim status panel (§3, §7) ── */
+details.klaim {
+  margin: 18px 0 4px; border: 1px solid var(--line); border-radius: 4px;
+  background: #fff; padding: 4px 16px;
+}
+details.klaim summary { cursor: pointer; font-size: 14px; font-weight: bold; color: var(--muted); padding: 8px 0; text-transform: uppercase; letter-spacing: .5px; }
+.kbadge { font-weight: normal; font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--muted); margin-left: 8px; }
+.ksection { margin: 6px 0 14px; }
+.khead { font-size: 13px; font-weight: bold; color: var(--muted); margin: 8px 0 6px; }
+/* Unanswered claims are marked hardest — §7 inverts the usual habit: what
+   nobody answered outranks what was resolved. */
+.ksection.ksepi .khead { color: var(--warn); }
+.krow {
+  display: grid; grid-template-columns: 42px 66px 1fr auto; gap: 10px; align-items: baseline;
+  padding: 6px 8px; border-radius: 3px; font-size: 14px;
+}
+.ksection.ksepi .krow { background: var(--warnbg); margin-bottom: 4px; }
+.kid { font-weight: bold; font-size: 13px; }
+.kside { font-size: 12px; color: var(--muted); }
+.ktext { line-height: 1.4; }
+.krow.k-pro .kid { color: var(--pro); }
+.krow.k-kontra .kid { color: var(--kontra); }
+.kstatus { font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* Abandoned: a side dropped its own claim. Struck through so it reads as
+   withdrawn at a glance. */
+.krow.kst-diabaikan .ktext { text-decoration: line-through; opacity: .7; }
+.krow.kst-diabaikan .kstatus { color: var(--kontra); font-weight: bold; }
 
 @media (max-width: 820px) {
   .cols { flex-direction: column; }

@@ -10,7 +10,7 @@ use crate::llm::{Client, LlmError, Message};
 use crate::phase::{self, Putusan};
 use crate::render;
 use crate::transcript::{
-    Provenance, Session, SessionStatus, Turn, TurnFlag, simpan,
+    Claim, ClaimStatus, Provenance, Session, SessionStatus, Turn, TurnFlag, simpan,
 };
 use crate::view::{Phase, Role, Side, View, build_view};
 
@@ -27,7 +27,12 @@ pub struct Engine {
 
 /// A per-turn progress sink. Boxed so the two binaries can plug in different
 /// destinations (stdout, an SSE broadcast) behind the same engine.
-pub type OnTurn = Box<dyn Fn(usize, &Turn) + Send + Sync>;
+///
+/// Carries the session's full claim list as it stands after this turn, so a
+/// browser can redraw the claim-status panel (§7) from the same event that
+/// delivers the turn — the claims change on almost every turn (a new one born,
+/// an old one attacked), so shipping them together avoids a second channel.
+pub type OnTurn = Box<dyn Fn(usize, &Turn, &[Claim]) + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -78,7 +83,7 @@ impl Engine {
         ));
         s.status = SessionStatus::MenungguPersetujuan;
         let idx = s.transcript.len() - 1;
-        (self.on_turn)(idx, s.transcript.get(idx).unwrap());
+        (self.on_turn)(idx, s.transcript.get(idx).unwrap(), &s.claims);
         simpan(s, &self.sessions_dir).await?;
         Ok(())
     }
@@ -147,12 +152,61 @@ impl Engine {
             if !view.acts() {
                 continue;
             }
-            let turn = self.satu_turn(s, fase, role, ronde, urutan, &view).await?;
+            let mut turn = self.satu_turn(s, fase, role, ronde, urutan, &view).await?;
+
+            // Claim tracking (§3). Only debaters make claims; the moderator and
+            // synthesizer are excluded. Extraction is auxiliary: a moderator that
+            // fails to parse a turn must not sink a debate whose actual turn
+            // succeeded, so its errors are logged and swallowed rather than
+            // propagated (§4: a tracking miss is information lost, not an error).
+            if let Some(side) = role.side() {
+                match self.ekstrak_klaim(s, side, &turn.text).await {
+                    Ok(ext) => turn.attacks = terapkan_ekstraksi(&mut s.claims, side, ronde, ext),
+                    Err(e) => eprintln!("ekstraksi klaim gagal (turn dipertahankan): {e}"),
+                }
+            }
+
             let idx = s.transcript.len();
-            (self.on_turn)(idx, &turn);
+            (self.on_turn)(idx, &turn, &s.claims);
             s.transcript.push(turn);
         }
         Ok(())
+    }
+
+    /// Asks the moderator to read one debater turn against the running claim
+    /// list and report what changed: new claims, opposing claims attacked, own
+    /// claims abandoned (§3, §11).
+    ///
+    /// The moderator does this, not the debaters: §10 forbids asking a model to
+    /// number its own claims when a third party can do it more accurately.
+    async fn ekstrak_klaim(
+        &self,
+        s: &Session,
+        side: Side,
+        teks: &str,
+    ) -> Result<Ekstraksi, EngineError> {
+        let daftar = daftar_klaim(&s.claims);
+        let prompt = isi(
+            &self.prompts.ekstraksi,
+            &[
+                ("klaim", s.claim.as_deref().unwrap_or(&s.topic)),
+                ("sisi", side.label()),
+                ("teks", teks),
+                ("daftar_klaim", &daftar),
+            ],
+        );
+
+        let c = self
+            .client
+            .kirim(
+                &self.cfg.models.moderator,
+                &[Message::system(prompt), Message::user("Lacak klaim turn ini.")],
+                self.cfg.temperature,
+                800,
+            )
+            .await?;
+
+        Ok(parse_ekstraksi(&c.text))
     }
 
     /// One turn, including the single quality retry §4 allows.
@@ -348,6 +402,9 @@ fn bikin_turn(
             flags.dedup();
             flags
         },
+        // Filled by the extraction pass in `jalankan_fase` after this returns;
+        // moderator and synthesizer turns keep it empty, as they make no claims.
+        attacks: Vec::new(),
     }
 }
 
@@ -398,6 +455,164 @@ fn bersihkan(s: &str) -> String {
     s.trim().trim_matches(|c| c == '*' || c == '"').trim().to_string()
 }
 
+/// What the moderator's extraction pass reports about one turn (§3).
+#[derive(Debug, Default, PartialEq)]
+struct Ekstraksi {
+    /// Newly stated claims, in the moderator's words. The engine assigns ids.
+    baru: Vec<String>,
+    /// Ids of opposing claims this turn attacked.
+    menyerang: Vec<String>,
+    /// Ids of this side's own claims it withdrew.
+    ditinggalkan: Vec<String>,
+}
+
+/// Renders the current claim list for the extraction prompt. Empty list reads
+/// as an explicit "(belum ada klaim)" so the moderator is never handed a blank.
+fn daftar_klaim(claims: &[Claim]) -> String {
+    if claims.is_empty() {
+        return "(belum ada klaim)".to_string();
+    }
+    claims
+        .iter()
+        .map(|c| format!("{} [{}] ({}): {}", c.id, c.owner.label(), claim_status_pendek(c.status), c.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn claim_status_pendek(s: ClaimStatus) -> &'static str {
+    match s {
+        ClaimStatus::Hidup => "belum dijawab",
+        ClaimStatus::Terbantah => "terbantah",
+        ClaimStatus::Diabaikan => "ditinggalkan",
+    }
+}
+
+/// Applies one extraction to the running claim list, in place, and returns the
+/// ids of opposing claims this turn attacked (for the turn's `attacks` field).
+///
+/// New claims are born `Hidup` — stated, not yet answered, which §3 calls the
+/// most interesting status in the system. An attack flips an *opponent's* claim
+/// to `Terbantah`; an abandonment flips one of *your own* to `Diabaikan`. Both
+/// checks verify ownership so a mis-addressed id from the moderator cannot mark
+/// the wrong side's claim. Ids are assigned here, never by the debaters (§10).
+fn terapkan_ekstraksi(
+    claims: &mut Vec<Claim>,
+    side: Side,
+    ronde: u32,
+    ext: Ekstraksi,
+) -> Vec<String> {
+    for teks in ext.baru {
+        let teks = bersihkan(&teks);
+        if teks.is_empty() {
+            continue;
+        }
+        let id = format!("K{}", claims.len() + 1);
+        claims.push(Claim { id, owner: side, text: teks, status: ClaimStatus::Hidup, born_round: ronde });
+    }
+
+    // An attack only counts against an opponent's claim; record the ones that
+    // resolve to a real, opposing id so the chip never points at a claim that
+    // does not exist or at the attacker's own side.
+    let mut menyerang_valid = Vec::new();
+    for id in ext.menyerang {
+        if let Some(c) = claims.iter_mut().find(|c| c.id == id && c.owner == side.lawan()) {
+            c.status = ClaimStatus::Terbantah;
+            menyerang_valid.push(c.id.clone());
+        }
+    }
+
+    for id in ext.ditinggalkan {
+        if let Some(c) = claims.iter_mut().find(|c| c.id == id && c.owner == side) {
+            c.status = ClaimStatus::Diabaikan;
+        }
+    }
+
+    menyerang_valid
+}
+
+/// Pulls the four-line extraction format out of the moderator's reply.
+///
+/// Tolerant like [`parse_framing`]: an off-format line drops out rather than
+/// aborting the tracking for a whole turn. A "-" placeholder means the section
+/// is empty. Claim-numbering that the moderator adds despite being told not to
+/// (a leading "1." or "K3:") is stripped, since the engine owns the ids.
+fn parse_ekstraksi(text: &str) -> Ekstraksi {
+    let mut ext = Ekstraksi::default();
+    let mut di_baru = false;
+
+    for baris in text.lines() {
+        let b = baris.trim();
+        if b.is_empty() {
+            continue;
+        }
+
+        // Split on the label's own colon so the tail is sliced from the original
+        // line, never from an uppercased copy — uppercasing can change byte
+        // length (ß → SS) and shift the offset, which would corrupt claim text.
+        let label = b.split(':').next().unwrap_or("").trim().to_uppercase();
+        let ekor = b.split_once(':').map(|(_, e)| e.trim()).unwrap_or("");
+
+        match label.as_str() {
+            "BARU" => {
+                di_baru = true;
+                // Allow "BARU: teks" on one line as well as a bulleted list below.
+                if !ekor.is_empty() && ekor != "-" {
+                    ext.baru.push(bersihkan_klaim(ekor));
+                }
+            }
+            "MENYERANG" => {
+                di_baru = false;
+                ext.menyerang = pisah_id(ekor);
+            }
+            "DITINGGALKAN" => {
+                di_baru = false;
+                ext.ditinggalkan = pisah_id(ekor);
+            }
+            _ if di_baru => {
+                // A bullet under BARU. Strip the marker; skip an explicit empty.
+                let isi = b.trim_start_matches(['-', '*', '•']).trim();
+                if !isi.is_empty() && isi != "-" {
+                    ext.baru.push(bersihkan_klaim(isi));
+                }
+            }
+            _ => {}
+        }
+    }
+    ext
+}
+
+/// Strips a leading "K3:", "3.", or "3)" the moderator may have added to a new
+/// claim despite being told not to number — the engine owns claim ids.
+fn bersihkan_klaim(s: &str) -> String {
+    let s = s.trim();
+    let tanpa_nomor = s
+        .split_once([':', '.', ')'])
+        .map(|(kepala, ekor)| {
+            let k = kepala.trim();
+            let berupa_id = k.len() <= 4
+                && k.chars().next().map(|c| c == 'K' || c == 'k').unwrap_or(false)
+                && k[1..].chars().all(|c| c.is_ascii_digit());
+            let berupa_angka = !k.is_empty() && k.chars().all(|c| c.is_ascii_digit());
+            if berupa_id || berupa_angka { ekor.trim() } else { s }
+        })
+        .unwrap_or(s);
+    bersihkan(tanpa_nomor)
+}
+
+/// Parses "K2, K5" (or "-") into a list of ids, uppercased to match stored ids.
+fn pisah_id(s: &str) -> Vec<String> {
+    let s = s.trim();
+    if s.is_empty() || s == "-" {
+        return Vec::new();
+    }
+    s.split(&[',', ' '][..])
+        .map(|t| t.trim().trim_matches(|c: char| !c.is_alphanumeric()).to_uppercase())
+        .filter(|t| {
+            t.len() >= 2 && t.starts_with('K') && t[1..].chars().all(|c| c.is_ascii_digit())
+        })
+        .collect()
+}
+
 /// Markdown for a finished (or stopped) session.
 pub fn markdown(s: &Session) -> String {
     render::sesi_ke_markdown(s)
@@ -425,5 +640,109 @@ mod tests {
         let out = rangkai_view(&View::Blind, "X lebih baik dari Y");
         assert!(out.contains("X lebih baik dari Y"));
         assert!(!out.contains("SEJAUH INI"));
+    }
+
+    #[test]
+    fn parse_ekstraksi_lengkap() {
+        let teks = "BARU:\n\
+                    - Rust mencegah data race saat kompilasi\n\
+                    - Ekosistem async Rust sudah matang\n\
+                    MENYERANG: K2, K5\n\
+                    DITINGGALKAN: -\n";
+        let e = parse_ekstraksi(teks);
+        assert_eq!(e.baru.len(), 2);
+        assert!(e.baru[0].contains("data race"));
+        assert_eq!(e.menyerang, vec!["K2", "K5"]);
+        assert!(e.ditinggalkan.is_empty());
+    }
+
+    #[test]
+    fn parse_ekstraksi_tanpa_klaim_baru() {
+        // A turn that only attacks: BARU empty, MENYERANG present.
+        let e = parse_ekstraksi("BARU: -\nMENYERANG: K1\nDITINGGALKAN: -");
+        assert!(e.baru.is_empty());
+        assert_eq!(e.menyerang, vec!["K1"]);
+    }
+
+    #[test]
+    fn parse_ekstraksi_membuang_penomoran_moderator() {
+        // The moderator numbered despite being told not to; the engine owns ids.
+        let e = parse_ekstraksi("BARU:\n- K7: Go lebih produktif\n- 2. Kompilasi Go cepat\nMENYERANG: -\nDITINGGALKAN: -");
+        assert_eq!(e.baru.len(), 2);
+        assert_eq!(e.baru[0], "Go lebih produktif");
+        assert_eq!(e.baru[1], "Kompilasi Go cepat");
+    }
+
+    #[test]
+    fn parse_ekstraksi_id_bukan_klaim_diabaikan() {
+        // Junk tokens in an id line are dropped; only K-ids survive.
+        let e = parse_ekstraksi("BARU: -\nMENYERANG: tidak ada\nDITINGGALKAN: -");
+        assert!(e.menyerang.is_empty());
+    }
+
+    #[test]
+    fn terapkan_ekstraksi_lahir_hidup_dan_serang_lawan() {
+        let mut claims = vec![Claim {
+            id: "K1".into(),
+            owner: Side::Pro,
+            text: "klaim pro".into(),
+            status: ClaimStatus::Hidup,
+            born_round: 1,
+        }];
+        // Kontra speaks: adds one claim, attacks Pro's K1.
+        let ext = Ekstraksi {
+            baru: vec!["klaim kontra baru".into()],
+            menyerang: vec!["K1".into()],
+            ditinggalkan: vec![],
+        };
+        let att = terapkan_ekstraksi(&mut claims, Side::Kontra, 2, ext);
+
+        assert_eq!(att, vec!["K1"], "chip menandai serangan valid");
+        assert_eq!(claims.len(), 2);
+        assert_eq!(claims[0].status, ClaimStatus::Terbantah, "K1 milik lawan → terbantah");
+        assert_eq!(claims[1].id, "K2");
+        assert_eq!(claims[1].owner, Side::Kontra);
+        assert_eq!(claims[1].status, ClaimStatus::Hidup, "klaim baru lahir hidup");
+        assert_eq!(claims[1].born_round, 2);
+    }
+
+    #[test]
+    fn terapkan_ekstraksi_tak_bisa_serang_klaim_sendiri() {
+        // A mis-addressed id pointing at your OWN claim must not flip it — an
+        // attack only counts against the opponent (§3).
+        let mut claims = vec![Claim {
+            id: "K1".into(),
+            owner: Side::Pro,
+            text: "klaim pro".into(),
+            status: ClaimStatus::Hidup,
+            born_round: 1,
+        }];
+        let ext = Ekstraksi {
+            baru: vec![],
+            menyerang: vec!["K1".into()],
+            ditinggalkan: vec![],
+        };
+        // Pro tries to "attack" its own K1.
+        let att = terapkan_ekstraksi(&mut claims, Side::Pro, 1, ext);
+        assert!(att.is_empty());
+        assert_eq!(claims[0].status, ClaimStatus::Hidup, "klaim sendiri tetap hidup");
+    }
+
+    #[test]
+    fn terapkan_ekstraksi_tinggalkan_klaim_sendiri() {
+        let mut claims = vec![Claim {
+            id: "K1".into(),
+            owner: Side::Pro,
+            text: "klaim pro".into(),
+            status: ClaimStatus::Hidup,
+            born_round: 1,
+        }];
+        let ext = Ekstraksi {
+            baru: vec![],
+            menyerang: vec![],
+            ditinggalkan: vec!["K1".into()],
+        };
+        terapkan_ekstraksi(&mut claims, Side::Pro, 2, ext);
+        assert_eq!(claims[0].status, ClaimStatus::Diabaikan);
     }
 }

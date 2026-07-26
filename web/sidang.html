@@ -15,6 +15,7 @@
 <div class="wrap">
   <div id="head"></div>
   <div id="fasestrip" class="fasestrip"></div>
+  <div id="klaimpanel"></div>
   <div id="body"><div class="notice">memuat…</div></div>
 
   <details class="panel">
@@ -30,6 +31,7 @@ const id = location.pathname.split('/')[2];
 const FASE = ['Framing','Opening','Rebuttal','Cross-exam: bertanya','Cross-exam: menjawab','Crux','Sintesis','Selesai'];
 const turns = new Map();   // index -> turn
 let meta = null;
+let claims = [];           // full claim list, server-ordered (unanswered first)
 
 function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
 
@@ -48,8 +50,46 @@ function head() {
   strip.innerHTML = FASE.map(f => `<span class="${active.has(f)?'on':''}">${f}</span>`).join('');
 }
 
+function renderKlaim() {
+  const el = document.getElementById('klaimpanel');
+  if (!claims.length) { el.innerHTML = ''; return; }
+
+  // Unanswered claims lead and are marked hardest (§3, §7): the whole reason
+  // this tool exists is to surface what nobody ever answered, so it outranks
+  // what was resolved — the inversion of the usual habit of leading with
+  // settled things. Abandoned claims (a side dropping its own argument) get
+  // their own loud mark; neither is a score, and there is no winner count here.
+  const sepi = claims.filter(c => c.unanswered);
+  const lain = claims.filter(c => !c.unanswered);
+
+  let html = `<details class="klaim" open><summary>Status klaim
+    <span class="kbadge">${sepi.length} tak dijawab · ${claims.length} total</span></summary>`;
+
+  if (sepi.length) {
+    html += `<div class="ksection ksepi"><div class="khead">⚑ Tidak pernah dijawab</div>`;
+    sepi.forEach(c => { html += krow(c); });
+    html += `</div>`;
+  }
+  if (lain.length) {
+    html += `<div class="ksection"><div class="khead">Sudah ditanggapi</div>`;
+    lain.forEach(c => { html += krow(c); });
+    html += `</div>`;
+  }
+  html += `</details>`;
+  el.innerHTML = html;
+}
+
+function krow(c) {
+  return `<div class="krow k-${c.side} kst-${c.status}">
+    <span class="kid">${esc(c.id)}</span>
+    <span class="kside">${esc(c.owner_label)}</span>
+    <span class="ktext">${esc(c.text)}</span>
+    <span class="kstatus">${esc(c.status_label)}</span></div>`;
+}
+
 function render() {
   head();
+  renderKlaim();
   const body = document.getElementById('body');
   const list = [...turns.values()].sort((a,b) => a.index - b.index);
   if (!list.length) { body.innerHTML = '<div class="notice">menunggu giliran pertama…</div>'; return; }
@@ -97,8 +137,22 @@ function card(t, cls) {
   let w = '';
   if (t.provenance_warning) w += `<div class="warn">⚠ ${esc(t.provenance_warning)}</div>`;
   (t.flags||[]).forEach(f => w += `<div class="flag">⚑ ${esc(f)}</div>`);
+
+  // Attack chip (§7): a rebuttal that names an opposing claim it engaged, or —
+  // just as loudly — the absence of any. A rebuttal that attacked nothing is a
+  // side talking to itself, which is the softness this whole tool exists to make
+  // visible without reading a word. Only rebuttals carry the "sepi" mark:
+  // openings are blind by design and cross-exam answers reply to a question.
+  let chip = '';
+  const att = t.attacks || [];
+  if (att.length) {
+    chip = `<div class="chips">${att.map(id => `<span class="chip">→ menyerang ${esc(id)}</span>`).join('')}</div>`;
+  } else if (t.phase === 'Rebuttal') {
+    chip = `<div class="chips"><span class="chip sepi">→ tidak menyerang klaim mana pun</span></div>`;
+  }
+
   return `<div class="turn ${cls}">${w}<div class="text">${esc(t.text)}</div>
-    <div class="foot">${t.word_count} kata${t.truncated?' · terpotong':''}</div></div>`;
+    ${chip}<div class="foot">${t.word_count} kata${t.truncated?' · terpotong':''}</div></div>`;
 }
 
 function addTurn(t){ turns.set(t.index, t); render(); }
@@ -108,6 +162,7 @@ async function load() {
   if (!r.ok) { document.getElementById('body').innerHTML = '<div class="err">Sesi tidak ditemukan.</div>'; return; }
   meta = await r.json();
   if (meta.status === 'menunggu_persetujuan') { location.href = '/sesi/' + id + '/framing'; return; }
+  claims = meta.claims || [];
   (meta.turns||[]).forEach(addTurn);
   render();
   if (meta.status === 'berjalan') listen();
@@ -118,6 +173,7 @@ function listen() {
   // connection resumes from the last turn seen — no missed or doubled turns.
   const es = new EventSource('/sesi/' + id + '/stream');
   es.addEventListener('turn', e => addTurn(JSON.parse(e.data)));
+  es.addEventListener('klaim', e => { claims = JSON.parse(e.data); renderKlaim(); });
   es.addEventListener('selesai', () => { es.close(); meta.status='selesai'; meta.status_label='selesai'; render(); });
   es.addEventListener('gagal', e => { es.close(); meta.status='gagal'; meta.status_label='berhenti — bisa dilanjutkan'; render(); });
 }

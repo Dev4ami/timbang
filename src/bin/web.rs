@@ -26,7 +26,7 @@ use tokio::sync::broadcast;
 use timbang::config::{ApiKey, Config, ModelId, Models, Prompts, SessionConfig, WebSettingsPatch};
 use timbang::engine::{Engine, OnTurn};
 use timbang::llm::Client;
-use timbang::render::{self, RiwayatEntry, SessionView, WebTurn};
+use timbang::render::{self, ClaimView, RiwayatEntry, SessionView, WebTurn};
 use timbang::transcript::{Session, SessionStatus, muat, simpan};
 
 /// One live debate. The background task appends turns here and broadcasts them;
@@ -35,6 +35,10 @@ use timbang::transcript::{Session, SessionStatus, muat, simpan};
 /// debate starts.
 struct Live {
     turns: Mutex<Vec<WebTurn>>,
+    /// The claim panel's current state, replaced wholesale on each turn (§3):
+    /// a turn can add a claim and flip another's status at once, so the whole
+    /// list travels together rather than as deltas the browser has to merge.
+    claims: Mutex<Vec<ClaimView>>,
     status: Mutex<LiveStatus>,
     tx: broadcast::Sender<Ev>,
 }
@@ -52,6 +56,10 @@ enum LiveStatus {
 #[derive(Clone)]
 enum Ev {
     Turn(WebTurn),
+    /// The full claim list after a turn. Rides alongside `Turn` rather than
+    /// inside it so a reconnecting client that only wants turns can ignore it,
+    /// and so the panel can update without the browser diffing claim state.
+    Klaim(Vec<ClaimView>),
     Selesai,
     Gagal(String),
 }
@@ -169,7 +177,7 @@ async fn api_baru(State(st): State<Sd>, Json(req): Json<BaruReq>) -> Result<Resp
     // per-turn hook is a no-op: framing is one quick turn, and the page polls.
     let st2 = st.clone();
     tokio::spawn(async move {
-        let eng = mesin(&st2, &s.config_used, Box::new(|_, _| {}));
+        let eng = mesin(&st2, &s.config_used, Box::new(|_, _, _| {}));
         if let Err(e) = eng.framing(&mut s).await {
             s.status = SessionStatus::Gagal { at_phase: s.phase };
             eprintln!("framing {} gagal: {e}", s.id);
@@ -220,8 +228,10 @@ async fn api_mulai(
     // Register the live channel before spawning, so an SSE client that connects
     // immediately finds it.
     let (tx, _) = broadcast::channel(256);
+    let view0 = render::SessionView::from_session(&s);
     let live = Arc::new(Live {
-        turns: Mutex::new(render::SessionView::from_session(&s).turns),
+        turns: Mutex::new(view0.turns),
+        claims: Mutex::new(view0.claims),
         status: Mutex::new(LiveStatus::Berjalan),
         tx: tx.clone(),
     });
@@ -231,11 +241,20 @@ async fn api_mulai(
     let cfg_used = s.config_used.clone();
     tokio::spawn(async move {
         let live2 = live.clone();
-        let on_turn = Box::new(move |idx: usize, t: &timbang::transcript::Turn| {
-            let wt = render::turn_web(idx, t);
-            live2.turns.lock().unwrap().push(wt.clone());
-            let _ = live2.tx.send(Ev::Turn(wt));
-        });
+        let on_turn = Box::new(
+            move |idx: usize, t: &timbang::transcript::Turn, claims: &[timbang::transcript::Claim]| {
+                let wt = render::turn_web(idx, t);
+                live2.turns.lock().unwrap().push(wt.clone());
+                // Re-sort each push so the panel keeps unanswered claims first,
+                // matching the from-disk view (§7).
+                let mut cv: Vec<_> = claims.iter().collect();
+                cv.sort_by_key(|c| (c.status != timbang::transcript::ClaimStatus::Hidup, c.born_round));
+                let cv: Vec<ClaimView> = cv.into_iter().map(render::claim_view).collect();
+                *live2.claims.lock().unwrap() = cv.clone();
+                let _ = live2.tx.send(Ev::Turn(wt));
+                let _ = live2.tx.send(Ev::Klaim(cv));
+            },
+        );
         let eng = mesin(&st2, &cfg_used, on_turn);
 
         let hasil = eng.jalankan(&mut s).await;
@@ -272,6 +291,7 @@ async fn api_sesi(State(st): State<Sd>, Path(id): Path<String>) -> Result<Respon
     // checkpoint, so prefer it when present.
     if let Some(live) = st.live.lock().unwrap().get(&id) {
         view.turns = live.turns.lock().unwrap().clone();
+        view.claims = live.claims.lock().unwrap().clone();
         view.status = match &*live.status.lock().unwrap() {
             LiveStatus::Berjalan => "berjalan",
             LiveStatus::Selesai => "selesai",
@@ -324,11 +344,18 @@ async fn stream(
         let backlog = live.turns.lock().unwrap().clone();
         let max_backlog = backlog.last().map(|t| t.index as i64).unwrap_or(-1);
 
+        // Snapshot the current claim panel too, so a client connecting mid-debate
+        // paints it immediately rather than waiting for the next turn.
+        let claims0 = live.claims.lock().unwrap().clone();
+
         Sse::new(Box::pin(async_stream::stream! {
             for wt in backlog {
                 if wt.index as i64 > last {
                     yield Ok(ev_turn(&wt));
                 }
+            }
+            if !claims0.is_empty() {
+                yield Ok(ev_klaim(&claims0));
             }
             loop {
                 match rx.recv().await {
@@ -337,6 +364,7 @@ async fn stream(
                             yield Ok(ev_turn(&wt));
                         }
                     }
+                    Ok(Ev::Klaim(cv)) => { yield Ok(ev_klaim(&cv)); }
                     Ok(Ev::Selesai) => { yield Ok(sse::Event::default().event("selesai").data("{}")); break; }
                     Ok(Ev::Gagal(p)) => { yield Ok(sse::Event::default().event("gagal").data(p)); break; }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -351,6 +379,7 @@ async fn stream(
         let path = st.sessions_dir.join(format!("{id}.json"));
         let s = muat(&path).await.map_err(|_| AppError::not_found())?;
         let view = SessionView::from_session(&s);
+        let claims = view.claims.clone();
         let terminal = match s.status {
             SessionStatus::Gagal { .. } => Some(("gagal", "sesi berhenti — bisa dilanjutkan".to_string())),
             SessionStatus::Selesai => Some(("selesai", "{}".to_string())),
@@ -361,6 +390,9 @@ async fn stream(
                 if wt.index as i64 > last {
                     yield Ok(ev_turn(&wt));
                 }
+            }
+            if !claims.is_empty() {
+                yield Ok(ev_klaim(&claims));
             }
             if let Some((name, data)) = terminal {
                 yield Ok(sse::Event::default().event(name).data(data));
@@ -381,6 +413,15 @@ fn ev_turn(wt: &WebTurn) -> sse::Event {
         .id(wt.index.to_string())
         .event("turn")
         .data(serde_json::to_string(wt).unwrap_or_default())
+}
+
+/// The claim panel as one event. Deliberately without an `id`: the panel is a
+/// whole-state snapshot, not part of the turn sequence, so it must not advance
+/// the client's Last-Event-ID and cause turns to be skipped on reconnect.
+fn ev_klaim(claims: &[ClaimView]) -> sse::Event {
+    sse::Event::default()
+        .event("klaim")
+        .data(serde_json::to_string(claims).unwrap_or_default())
 }
 
 // ─── settings + health ───────────────────────────────────────────────────────
