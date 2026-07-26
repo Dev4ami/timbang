@@ -28,7 +28,7 @@
 
 <script>
 const id = location.pathname.split('/')[2];
-const FASE = ['Framing','Opening','Rebuttal','Cross-exam: bertanya','Cross-exam: menjawab','Crux','Sintesis','Selesai'];
+const FASE = ['Framing','Opening','Rebuttal','Cross-exam: bertanya','Cross-exam: menjawab','Crux','Fact-check','Sintesis','Selesai'];
 const turns = new Map();   // index -> turn
 let meta = null;
 let claims = [];           // full claim list, server-ordered (unanswered first)
@@ -47,6 +47,12 @@ function head() {
     </div>`;
   const strip = document.getElementById('fasestrip');
   const active = new Set([...turns.values()].map(t => t.phase));
+  // Fact-check produces no turns (hasilnya ke Claim, bukan Turn), jadi
+  // deteksinya lewat verdict — kalau ada klaim ber-verdict, fase Fact-check
+  // sudah/sedang jalan.
+  if (claims.some(c => c.verdict_key || c.kind_key === 'opini')) {
+    active.add('Fact-check');
+  }
   strip.innerHTML = FASE.map(f => `<span class="${active.has(f)?'on':''}">${f}</span>`).join('');
 }
 
@@ -197,7 +203,7 @@ function listen() {
   // connection resumes from the last turn seen — no missed or doubled turns.
   const es = new EventSource('/sesi/' + id + '/stream');
   es.addEventListener('turn', e => addTurn(JSON.parse(e.data)));
-  es.addEventListener('klaim', e => { claims = JSON.parse(e.data); renderKlaim(); });
+  es.addEventListener('klaim', e => { claims = JSON.parse(e.data); renderKlaim(); head(); });
   es.addEventListener('selesai', () => { es.close(); meta.status='selesai'; meta.status_label='selesai'; render(); });
   es.addEventListener('gagal', e => { es.close(); meta.status='gagal'; meta.status_label='berhenti — bisa dilanjutkan'; render(); });
 }
