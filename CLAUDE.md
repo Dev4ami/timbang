@@ -217,7 +217,14 @@ sesi/            {id}.json — checkpoint per fase
 - Key hanya boleh disentuh modul `llm`.
 - Struct yang dikirim ke browser **terpisah** dari struct `Config`. Jangan pakai struct yang
   sama — kalau field key terbawa karena lupa, dia muncul di DevTools.
-- Server bind ke `127.0.0.1`, bukan `0.0.0.0`.
+- Server bind ke `127.0.0.1`, bukan `0.0.0.0`. **Pengecualian tunggal:** kalau
+  container di jaringan private dan public path punya auth di depan (mis. Coolify
+  + Cloudflare Access), bind `0.0.0.0` di dalam container boleh. Guard-nya
+  eksplisit di kode: `TIMBANG_ALLOW_PUBLIC_BIND=1` **dan** `TIMBANG_BIND` env
+  wajib, warning startup wajib muncul. `cargo run` biasa di laptop tetap kena
+  rem — env var absent → validasi tolak. Auth **di luar app**, bukan di
+  dalamnya, karena `CLAUDE.md` memaksa app tetap "satu pengguna" dan menambah
+  auth di sini justru pintu masuk ke fitur multi-user yang §1 tolak.
 - Browser tidak boleh pernah tahu soal key. Alur: browser → server Rust → 9router → model.
 
 ### Yang boleh diubah dari web vs tidak

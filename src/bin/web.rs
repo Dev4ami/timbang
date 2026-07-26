@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response, Sse, sse},
     routing::{get, post},
@@ -75,6 +75,10 @@ struct AppState {
     /// and so cannot be changed from the web at all.
     defaults: Mutex<SessionConfig>,
     live: Mutex<HashMap<String, Arc<Live>>>,
+    /// Lazy cache of `GET /v1/models`. Router's catalogue is stable within a
+    /// process lifetime; a `?refresh=1` query clears it if the user adds a new
+    /// model on the router side without restarting the server.
+    models_cache: Mutex<Option<Vec<(String, String)>>>,
 }
 
 type Sd = Arc<AppState>;
@@ -92,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         sessions_dir: base.sessions_dir.clone(),
         defaults: Mutex::new(defaults),
         live: Mutex::new(HashMap::new()),
+        models_cache: Mutex::new(None),
         prompts,
         client,
         base,
@@ -115,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/riwayat", get(api_riwayat))
         .route("/api/setting", get(api_setting_get).post(api_setting_post))
         .route("/api/sehat", get(api_sehat))
+        .route("/api/models", get(api_models))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -483,6 +489,46 @@ async fn api_sehat(State(st): State<Sd>) -> Json<serde_json::Value> {
     }
 }
 
+#[derive(Serialize)]
+struct ModelOut {
+    id: String,
+    owned_by: String,
+}
+
+#[derive(Deserialize, Default)]
+struct ModelsQuery {
+    refresh: Option<u8>,
+}
+
+/// `GET /api/models[?refresh=1]` — the router's catalogue, cached lazily.
+/// §5 flags combo-owned models as forbidden for Pro/Kontra; the UI is what
+/// enforces that (disables the option), not the server, because the config
+/// layer already runs a pairing check before a session starts.
+async fn api_models(
+    State(st): State<Sd>,
+    Query(q): Query<ModelsQuery>,
+) -> Result<Response, AppError> {
+    if q.refresh == Some(1) {
+        *st.models_cache.lock().unwrap() = None;
+    }
+    if let Some(cached) = st.models_cache.lock().unwrap().clone() {
+        return Ok(Json(map_models(&cached)).into_response());
+    }
+    let daftar = st
+        .client
+        .list_models()
+        .await
+        .map_err(|e| AppError(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    *st.models_cache.lock().unwrap() = Some(daftar.clone());
+    Ok(Json(map_models(&daftar)).into_response())
+}
+
+fn map_models(rows: &[(String, String)]) -> Vec<ModelOut> {
+    rows.iter()
+        .map(|(id, owned_by)| ModelOut { id: id.clone(), owned_by: owned_by.clone() })
+        .collect()
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 /// Builds an engine for one session, with its tunables (models, rounds, limits)
@@ -514,6 +560,7 @@ fn terapkan_patch(base: &SessionConfig, p: Option<&WebSettingsPatch>) -> Session
                 kontra: ModelId::new(m.kontra.as_str()),
                 moderator: ModelId::new(m.moderator.as_str()),
                 synthesizer: ModelId::new(m.synthesizer.as_str()),
+                fact_checker: m.fact_checker.clone(),
             };
         }
         if let Some(r) = p.rounds {

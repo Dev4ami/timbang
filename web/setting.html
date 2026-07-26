@@ -29,22 +29,67 @@
 <script>
 function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
 
+// Build one <select> for a role. `forbidCombo` disables combo-owned rows
+// (§5 forbids them for Pro/Kontra: chained provider fallback would mis-attribute
+// turns). Current value is added as a fallback option if the catalogue doesn't
+// list it — an old sesi's model, or a typo, still round-trips through the form.
+function opsiModel(id, models, current, forbidCombo) {
+  const seen = new Set();
+  const items = models.map(m => {
+    seen.add(m.id);
+    const bad = forbidCombo && m.owned_by === 'combo';
+    const label = m.owned_by ? `${m.id}  [${m.owned_by}${bad ? ' — tidak untuk Pro/Kontra' : ''}]` : m.id;
+    return `<option value="${esc(m.id)}"${m.id === current ? ' selected' : ''}${bad ? ' disabled' : ''}>${esc(label)}</option>`;
+  });
+  if (current && !seen.has(current)) {
+    items.unshift(`<option value="${esc(current)}" selected>${esc(current)} (tidak ada di router)</option>`);
+  }
+  return `<select id="${id}">${items.join('')}</select>`;
+}
+
 async function load() {
-  const d = await (await fetch('/api/setting')).json();
+  const [d, mRes] = await Promise.all([
+    fetch('/api/setting').then(r => r.json()),
+    fetch('/api/models').then(async r => {
+      if (!r.ok) return { error: (await r.json()).error || 'gagal ambil daftar model' };
+      return { models: await r.json() };
+    }),
+  ]);
+  const modelsErr = mRes.error;
+  const models = mRes.models || [];
   document.getElementById('form').className = '';
   document.getElementById('form').innerHTML = `
     <label>Base URL router (hanya baca)</label>
     <input type="text" value="${esc(d.base_url)}" disabled>
-    <label for="pro">Model Pro</label><input type="text" id="pro" value="${esc(d.models.pro)}">
-    <label for="kontra">Model Kontra</label><input type="text" id="kontra" value="${esc(d.models.kontra)}">
-    <label for="moderator">Model Moderator</label><input type="text" id="moderator" value="${esc(d.models.moderator)}">
-    <label for="synthesizer">Model Synthesizer</label><input type="text" id="synthesizer" value="${esc(d.models.synthesizer)}">
+    ${modelsErr ? `<div class="err" style="margin-top:14px">Daftar model tidak bisa diambil: ${esc(modelsErr)}. Field model tetap bisa diketik.</div>` : ''}
+    <label for="pro">Model Pro</label>${modelsErr
+      ? `<input type="text" id="pro" value="${esc(d.models.pro)}">`
+      : opsiModel('pro', models, d.models.pro, true)}
+    <label for="kontra">Model Kontra</label>${modelsErr
+      ? `<input type="text" id="kontra" value="${esc(d.models.kontra)}">`
+      : opsiModel('kontra', models, d.models.kontra, true)}
+    <label for="moderator">Model Moderator</label>${modelsErr
+      ? `<input type="text" id="moderator" value="${esc(d.models.moderator)}">`
+      : opsiModel('moderator', models, d.models.moderator, false)}
+    <label for="synthesizer">Model Synthesizer</label>${modelsErr
+      ? `<input type="text" id="synthesizer" value="${esc(d.models.synthesizer)}">`
+      : opsiModel('synthesizer', models, d.models.synthesizer, false)}
     <label for="rounds">Jumlah ronde</label><input type="number" id="rounds" value="${d.rounds}" min="1" max="10">
     <label for="word_limit">Batas kata per giliran</label><input type="number" id="word_limit" value="${d.word_limit}" min="50" max="1000">
     <label for="temperature">Temperature</label><input type="number" id="temperature" value="${d.temperature}" min="0" max="2" step="0.1">
     <div id="err" class="err" style="display:none"></div>
-    <div class="row"><button id="simpan">Simpan default</button><span id="ok" class="muted"></span></div>`;
+    <div class="row">
+      <button id="simpan">Simpan default</button>
+      <button id="refresh" class="ghost" type="button">Muat ulang daftar model</button>
+      <span id="ok" class="muted"></span>
+    </div>`;
   document.getElementById('simpan').onclick = simpan;
+  document.getElementById('refresh').onclick = async () => {
+    await fetch('/api/models?refresh=1');
+    document.getElementById('form').className = 'notice';
+    document.getElementById('form').innerHTML = 'memuat…';
+    load();
+  };
 }
 
 async function simpan() {

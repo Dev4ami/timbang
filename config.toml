@@ -25,3 +25,8 @@ kontra = "kr/deepseek-3.2"
 # quirk that does not touch cc/claude-opus-4-7.
 moderator = "kr/claude-haiku-4.5"
 synthesizer = "cc/claude-opus-4-7"
+# Runs after Crux to classify claims (faktual/opini) and cross-check the
+# faktual ones. §1 forbids using the result as a winner signal — it flags
+# "check this yourself", nothing more. Opus for the same reason synthesizer is
+# on it: fact-check catatan lands in front of the user, so quality matters.
+fact_checker = "cc/claude-opus-4-7"

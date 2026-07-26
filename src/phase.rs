@@ -165,6 +165,9 @@ pub fn giliran(phase: Phase, round: u32) -> Vec<Role> {
             urutan_ronde(round).into_iter().map(Role::from).collect()
         }
         Phase::Crux => urutan_ronde(round).into_iter().map(Role::from).collect(),
+        // FactCheck acts on Claims, not through Role. Engine::fact_check drives
+        // it directly; no debater turn is scheduled here.
+        Phase::FactCheck => vec![],
         Phase::Sintesis => vec![Role::Synthesizer],
         Phase::Selesai => vec![],
     }
@@ -200,6 +203,7 @@ pub fn boleh_paralel(phase: Phase) -> bool {
         | Phase::CrossExamAsk
         | Phase::CrossExamAnswer
         | Phase::Crux
+        | Phase::FactCheck
         | Phase::Sintesis
         | Phase::Selesai => false,
     }

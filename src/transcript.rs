@@ -121,6 +121,46 @@ pub enum ClaimStatus {
     Diabaikan,
 }
 
+/// Whether a claim is a checkable fact or a value judgement.
+///
+/// Set by the fact-check pass. `BelumDiklasifikasi` is the default so sessions
+/// written before Tahap 4 still load — a Tahap-3 session's claims read back with
+/// no verdict at all rather than a wrong one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimKind {
+    #[default]
+    BelumDiklasifikasi,
+    /// A checkable factual assertion — dates, numbers, cited studies.
+    Faktual,
+    /// A value judgement, prediction, or normative claim — not checkable
+    /// against sources, so fact-check has nothing to say about it.
+    Opini,
+}
+
+/// The outcome of a fact-check on a Faktual claim. §1 forbids using these as
+/// scores or winner signals — they exist to flag "check this yourself", nothing
+/// more. In particular, no per-side aggregate ("Pro N% supported") is ever
+/// derived from these values (§8, §10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactVerdict {
+    /// Consistent with the fact-checker's own knowledge.
+    Terdukung,
+    /// The fact-checker sees at least one specific reason to doubt.
+    Diragukan,
+    /// The claim is too vague, too recent, or too niche to verify.
+    TidakBisaVerifikasi,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactCheck {
+    pub verdict: FactVerdict,
+    /// One or two sentences the user can act on — what to check, or why to
+    /// doubt. Not the fact-checker's whole reasoning.
+    pub catatan: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claim {
     pub id: String,
@@ -128,6 +168,30 @@ pub struct Claim {
     pub text: String,
     pub status: ClaimStatus,
     pub born_round: u32,
+    /// Fact-check classification. `serde(default)` so older sessions load.
+    #[serde(default)]
+    pub kind: ClaimKind,
+    /// The fact-check verdict, when `kind == Faktual`. `None` for Opini or
+    /// unclassified claims, and also `None` on a Faktual claim whose check
+    /// failed at the network layer — auxiliary, never fatal (§4).
+    #[serde(default)]
+    pub fact_check: Option<FactCheck>,
+}
+
+impl Claim {
+    /// A freshly extracted claim, before fact-check has run — `kind` defaults
+    /// to `BelumDiklasifikasi` and `fact_check` to `None`.
+    pub fn baru(id: String, owner: Side, text: String, born_round: u32) -> Self {
+        Claim {
+            id,
+            owner,
+            text,
+            status: ClaimStatus::Hidup,
+            born_round,
+            kind: ClaimKind::BelumDiklasifikasi,
+            fact_check: None,
+        }
+    }
 }
 
 /// The user's one-tap verdict on whether the crux was usable (§3).
@@ -418,9 +482,11 @@ mod tests {
     #[test]
     fn klaim_hidup_adalah_yang_tak_pernah_dijawab() {
         let mut s = Session::new("uji".into(), None, crate::config::SessionConfig::uji());
+        let mut k2 = Claim::baru("K2".into(), Side::Kontra, "b".into(), 1);
+        k2.status = ClaimStatus::Terbantah;
         s.claims = vec![
-            Claim { id: "K1".into(), owner: Side::Pro, text: "a".into(), status: ClaimStatus::Hidup, born_round: 1 },
-            Claim { id: "K2".into(), owner: Side::Kontra, text: "b".into(), status: ClaimStatus::Terbantah, born_round: 1 },
+            Claim::baru("K1".into(), Side::Pro, "a".into(), 1),
+            k2,
         ];
         let sepi = s.tak_pernah_dijawab();
         assert_eq!(sepi.len(), 1);

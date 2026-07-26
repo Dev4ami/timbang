@@ -80,10 +80,33 @@ function renderKlaim() {
 }
 
 function krow(c) {
+  // Fact-check badge (Tahap 4). Rendered as a small chip on the id side so it
+  // reads at a glance without pushing the claim text off the row. §1 forbids
+  // treating this as a winner signal — the badge flags "check this yourself",
+  // and the tooltip carries the fact-checker's short catatan for that reason.
+  //   faktual + terdukung  = ✓ green
+  //   faktual + diragukan  = ⚠ amber (loud — this is the one worth acting on)
+  //   faktual + tak-terverifikasi = ? grey (honest "I don't know")
+  //   opini = · grey (fact-check has nothing to say about a value judgement)
+  //   belum diperiksa = no badge (silence is honest before the pass runs)
+  let fc = '';
+  if (c.verdict_key) {
+    const mark = c.verdict_key === 'terdukung' ? '✓'
+               : c.verdict_key === 'diragukan' ? '⚠'
+               : '?';
+    const tip = c.fact_catatan ? esc(c.fact_catatan) : esc(c.verdict_label);
+    fc = `<span class="fbadge fb-${c.verdict_key}" title="${tip}">${mark} ${esc(c.verdict_label)}</span>`;
+  } else if (c.kind_key === 'opini') {
+    fc = `<span class="fbadge fb-opini" title="Klaim penilaian nilai — bukan fakta yang bisa diperiksa">· opini</span>`;
+  } else if (c.kind_key === 'faktual') {
+    fc = `<span class="fbadge fb-belum" title="Faktual tapi belum diperiksa">faktual · belum</span>`;
+  }
+
   return `<div class="krow k-${c.side} kst-${c.status}">
     <span class="kid">${esc(c.id)}</span>
     <span class="kside">${esc(c.owner_label)}</span>
     <span class="ktext">${esc(c.text)}</span>
+    ${fc}
     <span class="kstatus">${esc(c.status_label)}</span></div>`;
 }
 
@@ -119,13 +142,14 @@ function render() {
     html += `</section>`;
   });
 
-  // An explicit end marker so a finished debate does not read as truncated. The
-  // debate currently ends at Crux — synthesis is deliberately not run yet (§1:
-  // no summary before the transcript has been read), which is why the last
-  // phase is Crux and not a conclusion.
+  // An explicit end marker so a finished debate does not read as truncated.
+  // Argument ends at Crux; fact-check runs after but produces no turns (it
+  // writes to Claims — see the badges in the status panel). Synthesis is
+  // deliberately not run yet (§1: no summary before the transcript has been
+  // read), so the last visible phase is still Crux.
   if (meta.status === 'selesai') {
     html += `<div class="endmark">◆ Debat selesai — argumen berhenti di Crux.
-      Sintesis belum dijalankan pada tahap ini.</div>`;
+      Fact-check klaim ada di panel status klaim. Sintesis belum dijalankan.</div>`;
   } else if (meta.status === 'gagal') {
     html += `<div class="endmark gagal">■ Sesi berhenti di tengah. Transkrip sampai sini aman;
       sesi bisa dilanjutkan.</div>`;

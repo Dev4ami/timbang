@@ -10,7 +10,8 @@ use crate::llm::{Client, LlmError, Message};
 use crate::phase::{self, Putusan};
 use crate::render;
 use crate::transcript::{
-    Claim, ClaimStatus, Provenance, Session, SessionStatus, Turn, TurnFlag, simpan,
+    Claim, ClaimKind, ClaimStatus, FactCheck, FactVerdict, Provenance, Session, SessionStatus,
+    Turn, TurnFlag, simpan,
 };
 use crate::view::{Phase, Role, Side, View, build_view};
 
@@ -116,6 +117,23 @@ impl Engine {
                 break;
             }
 
+            // FactCheck runs on Claims, not turns, so it takes its own path
+            // instead of jalankan_fase. Auxiliary (§4): a fact-checker that
+            // fails must not sink a debate whose transcript is intact — its
+            // errors are logged and the session moves on to Sintesis with
+            // whatever verdicts got through.
+            if s.phase == Phase::FactCheck {
+                if let Err(e) = self.jalankan_fact_check(s).await {
+                    eprintln!("fact-check gagal (sesi dilanjutkan): {e}");
+                }
+                simpan(s, &self.sessions_dir).await?;
+                match phase::maju(s.phase, s.round, s.config_used.rounds) {
+                    Some((p, r)) => { s.phase = p; s.round = r; }
+                    None => break,
+                }
+                continue;
+            }
+
             if let Err(e) = self.jalankan_fase(s).await {
                 s.status = SessionStatus::Gagal { at_phase: s.phase };
                 simpan(s, &self.sessions_dir).await?;
@@ -207,6 +225,76 @@ impl Engine {
             .await?;
 
         Ok(parse_ekstraksi(&c.text))
+    }
+
+    /// Fact-check pass over every Claim in the session (Tahap 4).
+    ///
+    /// One request per claim: classify faktual/opini, and for faktual claims
+    /// score Terdukung/Diragukan/TidakBisaVerifikasi with a short note. Per
+    /// §1 the result is a "check this yourself" flag, never a winner signal —
+    /// no aggregate per side, no total score, no comparison across claims. The
+    /// prompt itself repeats this rule.
+    ///
+    /// Per-claim failures are swallowed and logged: the claim stays
+    /// `BelumDiklasifikasi` with `fact_check = None`, which the UI shows as
+    /// "belum diperiksa" rather than "diragukan by accident".
+    ///
+    /// The claim broadcast fires after each claim so the browser panel updates
+    /// live as verdicts land, matching the per-turn cadence of ekstraksi (§7).
+    pub async fn jalankan_fact_check(&self, s: &mut Session) -> Result<(), EngineError> {
+        let model = s.config_used.models.fact_checker().clone();
+        let klaim_sidang = s.claim.clone().unwrap_or_else(|| s.topic.clone());
+
+        for i in 0..s.claims.len() {
+            let (id, teks, owner, born) = {
+                let c = &s.claims[i];
+                (c.id.clone(), c.text.clone(), c.owner, c.born_round)
+            };
+
+            let prompt = isi(
+                &self.prompts.fact_check,
+                &[
+                    ("klaim_sidang", &klaim_sidang),
+                    ("sisi", owner.label()),
+                    ("ronde", &born.to_string()),
+                    ("teks_klaim", &teks),
+                ],
+            );
+
+            let resp = self
+                .client
+                .kirim(
+                    &model,
+                    &[Message::system(prompt), Message::user("Periksa klaim ini.")],
+                    self.cfg.temperature,
+                    600,
+                )
+                .await;
+
+            match resp {
+                Ok(c) => {
+                    let hasil = parse_fact_check(&c.text);
+                    terapkan_fact_check(&mut s.claims[i], hasil);
+                }
+                Err(e) => {
+                    // Per-claim failure is auxiliary. Leave the claim
+                    // unclassified — a wrong verdict is more misleading than
+                    // no verdict, and §1 forbids fabricating one.
+                    eprintln!("fact-check gagal untuk {id} (dilewati): {e}");
+                }
+            }
+
+            // A fact-check verdict does not create a Turn, so there is no
+            // per-turn broadcast to piggy-back on. Reuse on_turn to push the
+            // current claim list; the browser panel updates on each verdict
+            // rather than in one lump at the end (matches §7's per-turn rhythm).
+            if let Some(last) = s.transcript.last() {
+                let idx = s.transcript.len() - 1;
+                (self.on_turn)(idx, last, &s.claims);
+            }
+        }
+
+        Ok(())
     }
 
     /// One turn, including the single quality retry §4 allows.
@@ -507,7 +595,7 @@ fn terapkan_ekstraksi(
             continue;
         }
         let id = format!("K{}", claims.len() + 1);
-        claims.push(Claim { id, owner: side, text: teks, status: ClaimStatus::Hidup, born_round: ronde });
+        claims.push(Claim::baru(id, side, teks, ronde));
     }
 
     // An attack only counts against an opponent's claim; record the ones that
@@ -613,6 +701,91 @@ fn pisah_id(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// What the fact-checker reported for one claim: a required kind, and a verdict
+/// that is only meaningful when kind is Faktual. Notes are always kept — for an
+/// Opini they explain why the claim isn't fact-checkable, which is useful to the
+/// reader.
+#[derive(Debug, Default, PartialEq)]
+struct FactCheckHasil {
+    kind: ClaimKind,
+    verdict: Option<FactVerdict>,
+    catatan: String,
+}
+
+/// Parses the 3-line JENIS/VERDICT/CATATAN reply. Tolerant on purpose (§4): an
+/// unrecognised line leaves the claim unclassified rather than aborting a
+/// session's whole fact-check pass. Labels are matched case-insensitively; the
+/// catatan tail is sliced from the original line to preserve casing and any
+/// non-ASCII characters intact.
+fn parse_fact_check(text: &str) -> FactCheckHasil {
+    let mut hasil = FactCheckHasil::default();
+
+    for baris in text.lines() {
+        let b = baris.trim();
+        if b.is_empty() {
+            continue;
+        }
+        let (label, ekor) = match b.split_once(':') {
+            Some((l, e)) => (l.trim().to_uppercase(), e.trim()),
+            None => continue,
+        };
+
+        match label.as_str() {
+            "JENIS" => hasil.kind = parse_jenis(ekor),
+            "VERDICT" => hasil.verdict = parse_verdict(ekor),
+            "CATATAN" => hasil.catatan = bersihkan(ekor),
+            _ => {}
+        }
+    }
+
+    // A JENIS=Opini with a leftover VERDICT is nonsense — the prompt told the
+    // model to write "-" there. Drop the verdict so it does not surface later.
+    if matches!(hasil.kind, ClaimKind::Opini) {
+        hasil.verdict = None;
+    }
+    hasil
+}
+
+fn parse_jenis(s: &str) -> ClaimKind {
+    match s.trim().to_lowercase().as_str() {
+        "faktual" => ClaimKind::Faktual,
+        "opini" => ClaimKind::Opini,
+        _ => ClaimKind::BelumDiklasifikasi,
+    }
+}
+
+fn parse_verdict(s: &str) -> Option<FactVerdict> {
+    // Only exact matches. A partial or misspelled verdict becomes None, which
+    // reads in the UI as "belum diperiksa" — the same as no fact-check at all,
+    // which is the honest report when the reply was unparsable.
+    match s.trim().to_lowercase().as_str() {
+        "terdukung" => Some(FactVerdict::Terdukung),
+        "diragukan" => Some(FactVerdict::Diragukan),
+        // Accept the hyphenated form the prompt uses and the more natural spaces.
+        "tidak-bisa-diverifikasi" | "tidak bisa diverifikasi" => {
+            Some(FactVerdict::TidakBisaVerifikasi)
+        }
+        _ => None,
+    }
+}
+
+/// Writes one parsed result to a claim, in place. Split from `parse_fact_check`
+/// so the parsing has a pure test target and the write can be unit-tested
+/// without a Session.
+fn terapkan_fact_check(claim: &mut Claim, hasil: FactCheckHasil) {
+    claim.kind = hasil.kind;
+    claim.fact_check = match (hasil.kind, hasil.verdict) {
+        (ClaimKind::Faktual, Some(verdict)) => Some(FactCheck {
+            verdict,
+            catatan: hasil.catatan,
+        }),
+        // Faktual with no verdict, or Opini with any verdict, or unclassified:
+        // leave fact_check as None so the UI shows "belum diperiksa" and the
+        // reader is not handed a verdict that was never actually computed.
+        _ => None,
+    };
+}
+
 /// Markdown for a finished (or stopped) session.
 pub fn markdown(s: &Session) -> String {
     render::sesi_ke_markdown(s)
@@ -682,13 +855,7 @@ mod tests {
 
     #[test]
     fn terapkan_ekstraksi_lahir_hidup_dan_serang_lawan() {
-        let mut claims = vec![Claim {
-            id: "K1".into(),
-            owner: Side::Pro,
-            text: "klaim pro".into(),
-            status: ClaimStatus::Hidup,
-            born_round: 1,
-        }];
+        let mut claims = vec![Claim::baru("K1".into(), Side::Pro, "klaim pro".into(), 1)];
         // Kontra speaks: adds one claim, attacks Pro's K1.
         let ext = Ekstraksi {
             baru: vec!["klaim kontra baru".into()],
@@ -710,13 +877,7 @@ mod tests {
     fn terapkan_ekstraksi_tak_bisa_serang_klaim_sendiri() {
         // A mis-addressed id pointing at your OWN claim must not flip it — an
         // attack only counts against the opponent (§3).
-        let mut claims = vec![Claim {
-            id: "K1".into(),
-            owner: Side::Pro,
-            text: "klaim pro".into(),
-            status: ClaimStatus::Hidup,
-            born_round: 1,
-        }];
+        let mut claims = vec![Claim::baru("K1".into(), Side::Pro, "klaim pro".into(), 1)];
         let ext = Ekstraksi {
             baru: vec![],
             menyerang: vec!["K1".into()],
@@ -730,13 +891,7 @@ mod tests {
 
     #[test]
     fn terapkan_ekstraksi_tinggalkan_klaim_sendiri() {
-        let mut claims = vec![Claim {
-            id: "K1".into(),
-            owner: Side::Pro,
-            text: "klaim pro".into(),
-            status: ClaimStatus::Hidup,
-            born_round: 1,
-        }];
+        let mut claims = vec![Claim::baru("K1".into(), Side::Pro, "klaim pro".into(), 1)];
         let ext = Ekstraksi {
             baru: vec![],
             menyerang: vec![],
@@ -744,5 +899,83 @@ mod tests {
         };
         terapkan_ekstraksi(&mut claims, Side::Pro, 2, ext);
         assert_eq!(claims[0].status, ClaimStatus::Diabaikan);
+    }
+
+    // ─── fact-check parsing ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_fact_check_faktual_terdukung() {
+        let teks = "JENIS: faktual\nVERDICT: terdukung\nCATATAN: sejalan dengan data BLS 2024.";
+        let h = parse_fact_check(teks);
+        assert_eq!(h.kind, ClaimKind::Faktual);
+        assert_eq!(h.verdict, Some(FactVerdict::Terdukung));
+        assert!(h.catatan.contains("BLS 2024"));
+    }
+
+    #[test]
+    fn parse_fact_check_opini_membuang_verdict() {
+        // The prompt says "-" for Opini, but a model may echo a stray word.
+        // parse_fact_check must not surface a verdict on an Opini claim, since
+        // that would let a value judgement quietly acquire a fact-check status.
+        let h = parse_fact_check("JENIS: opini\nVERDICT: terdukung\nCATATAN: penilaian nilai.");
+        assert_eq!(h.kind, ClaimKind::Opini);
+        assert_eq!(h.verdict, None);
+    }
+
+    #[test]
+    fn parse_fact_check_verdict_takdikenal_jadi_none() {
+        let h = parse_fact_check("JENIS: faktual\nVERDICT: mungkin\nCATATAN: ragu.");
+        assert_eq!(h.kind, ClaimKind::Faktual);
+        assert_eq!(h.verdict, None, "verdict tak dikenal jangan ditebak");
+    }
+
+    #[test]
+    fn parse_fact_check_toleran_spasi_dan_kapital() {
+        let h = parse_fact_check("  jenis  :  Faktual  \nVERDICT: TIDAK BISA DIVERIFIKASI\nCATATAN: terlalu baru.");
+        assert_eq!(h.kind, ClaimKind::Faktual);
+        assert_eq!(h.verdict, Some(FactVerdict::TidakBisaVerifikasi));
+    }
+
+    #[test]
+    fn terapkan_fact_check_faktual_menulis_verdict() {
+        let mut c = Claim::baru("K1".into(), Side::Pro, "x".into(), 1);
+        terapkan_fact_check(&mut c, FactCheckHasil {
+            kind: ClaimKind::Faktual,
+            verdict: Some(FactVerdict::Diragukan),
+            catatan: "angka usang".into(),
+        });
+        assert_eq!(c.kind, ClaimKind::Faktual);
+        let fc = c.fact_check.as_ref().unwrap();
+        assert_eq!(fc.verdict, FactVerdict::Diragukan);
+        assert!(fc.catatan.contains("usang"));
+    }
+
+    #[test]
+    fn terapkan_fact_check_opini_tak_menyimpan_verdict() {
+        // Opini must never carry a fact_check — that would put a factual
+        // stamp on a value judgement, which §1 forbids.
+        let mut c = Claim::baru("K1".into(), Side::Pro, "x".into(), 1);
+        terapkan_fact_check(&mut c, FactCheckHasil {
+            kind: ClaimKind::Opini,
+            verdict: None,
+            catatan: "penilaian nilai".into(),
+        });
+        assert_eq!(c.kind, ClaimKind::Opini);
+        assert!(c.fact_check.is_none());
+    }
+
+    #[test]
+    fn terapkan_fact_check_faktual_tanpa_verdict_tetap_kosong() {
+        // Verdict unparsable but jenis faktual — leave fact_check None rather
+        // than default to something. A wrong verdict is more misleading than
+        // no verdict.
+        let mut c = Claim::baru("K1".into(), Side::Pro, "x".into(), 1);
+        terapkan_fact_check(&mut c, FactCheckHasil {
+            kind: ClaimKind::Faktual,
+            verdict: None,
+            catatan: String::new(),
+        });
+        assert_eq!(c.kind, ClaimKind::Faktual);
+        assert!(c.fact_check.is_none());
     }
 }

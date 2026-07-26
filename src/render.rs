@@ -7,7 +7,8 @@
 use serde::Serialize;
 
 use crate::transcript::{
-    ClaimStatus, FramingOption, Penilaian, Provenance, Session, SessionStatus, Turn, TurnFlag,
+    ClaimKind, ClaimStatus, FactVerdict, FramingOption, Penilaian, Provenance, Session,
+    SessionStatus, Turn, TurnFlag,
 };
 use crate::view::{Phase, Role, Side};
 
@@ -90,10 +91,11 @@ pub fn sesi_ke_markdown(s: &Session) -> String {
             out.push_str("### ⚑ Tidak pernah dijawab\n\n");
             for c in sepi {
                 out.push_str(&format!(
-                    "- **{}** ({}, ronde {}): {}\n",
+                    "- **{}** ({}, ronde {}){}: {}\n",
                     c.id,
                     c.owner.label(),
                     c.born_round,
+                    fact_check_ringkas_md(c),
                     c.text
                 ));
             }
@@ -108,10 +110,11 @@ pub fn sesi_ke_markdown(s: &Session) -> String {
             out.push_str("### Sudah ditanggapi\n\n");
             for c in lain {
                 out.push_str(&format!(
-                    "- {} ({}, {}): {}\n",
+                    "- {} ({}, {}){}: {}\n",
                     c.id,
                     c.owner.label(),
                     claim_status_label(c.status),
+                    fact_check_ringkas_md(c),
                     c.text
                 ));
             }
@@ -300,12 +303,29 @@ pub struct ClaimView {
     pub status_label: &'static str,
     pub unanswered: bool,
     pub born_round: u32,
+    /// Fact-check classification (Tahap 4). `kind_key` is the machine key the
+    /// browser matches on; `verdict_key` is `None` for opini/unclassified/
+    /// faktual-without-verdict so the badge simply doesn't render. `catatan`
+    /// rides along for the badge tooltip.
+    pub kind_key: &'static str,
+    pub kind_label: &'static str,
+    pub verdict_key: Option<&'static str>,
+    pub verdict_label: Option<&'static str>,
+    pub fact_catatan: Option<String>,
 }
 
 pub fn claim_view(c: &crate::transcript::Claim) -> ClaimView {
     let side = match c.owner {
         Side::Pro => "pro",
         Side::Kontra => "kontra",
+    };
+    let (verdict_key, verdict_label, fact_catatan) = match &c.fact_check {
+        Some(fc) => (
+            Some(verdict_key(fc.verdict)),
+            Some(verdict_label(fc.verdict)),
+            Some(fc.catatan.clone()),
+        ),
+        None => (None, None, None),
     };
     ClaimView {
         id: c.id.clone(),
@@ -316,6 +336,68 @@ pub fn claim_view(c: &crate::transcript::Claim) -> ClaimView {
         status_label: claim_status_label(c.status),
         unanswered: c.status == ClaimStatus::Hidup,
         born_round: c.born_round,
+        kind_key: kind_key(c.kind),
+        kind_label: kind_label(c.kind),
+        verdict_key,
+        verdict_label,
+        fact_catatan,
+    }
+}
+
+fn kind_key(k: ClaimKind) -> &'static str {
+    match k {
+        ClaimKind::BelumDiklasifikasi => "belum",
+        ClaimKind::Faktual => "faktual",
+        ClaimKind::Opini => "opini",
+    }
+}
+
+fn kind_label(k: ClaimKind) -> &'static str {
+    match k {
+        ClaimKind::BelumDiklasifikasi => "belum diperiksa",
+        ClaimKind::Faktual => "faktual",
+        ClaimKind::Opini => "opini",
+    }
+}
+
+fn verdict_key(v: FactVerdict) -> &'static str {
+    match v {
+        FactVerdict::Terdukung => "terdukung",
+        FactVerdict::Diragukan => "diragukan",
+        FactVerdict::TidakBisaVerifikasi => "tak-terverifikasi",
+    }
+}
+
+fn verdict_label(v: FactVerdict) -> &'static str {
+    match v {
+        FactVerdict::Terdukung => "terdukung",
+        FactVerdict::Diragukan => "diragukan",
+        FactVerdict::TidakBisaVerifikasi => "tidak bisa diverifikasi",
+    }
+}
+
+/// Fact-check summary as a bracketed suffix for markdown claim rows. Empty
+/// string when the claim was not checked (or is Opini), so the row reads
+/// exactly as it did before Tahap 4 for those cases — no visual clutter for
+/// claims with nothing to say. The `catatan` is a separate indented line so
+/// the id line stays scannable in a long list.
+fn fact_check_ringkas_md(c: &crate::transcript::Claim) -> String {
+    match (&c.kind, &c.fact_check) {
+        (ClaimKind::Faktual, Some(fc)) => {
+            let mark = match fc.verdict {
+                FactVerdict::Terdukung => "✓",
+                FactVerdict::Diragukan => "⚠",
+                FactVerdict::TidakBisaVerifikasi => "?",
+            };
+            let mut s = format!(" [{mark} {}]", verdict_label(fc.verdict));
+            if !fc.catatan.is_empty() {
+                s.push_str(&format!("\n    > {}", fc.catatan));
+            }
+            s
+        }
+        (ClaimKind::Faktual, None) => " [faktual · belum diperiksa]".to_string(),
+        (ClaimKind::Opini, _) => " [opini]".to_string(),
+        (ClaimKind::BelumDiklasifikasi, _) => String::new(),
     }
 }
 
@@ -435,6 +517,15 @@ pub struct RiwayatEntry {
     /// not binding — an observation with an action, not a winner's tally).
     pub klaim_total: usize,
     pub klaim_sepi: usize,
+    /// Fact-check diagnostics (§8). Aggregate across ALL claims, never split
+    /// per side — §10 forbids "Pro N%, Kontra M%" numbers because they read
+    /// like a score. `fakta_diragukan` on its own is a shape signal: a session
+    /// where 8 of 12 factual claims are diragukan means the source data
+    /// on both sides is weak, which is information about the topic.
+    pub fakta_total: usize,
+    pub fakta_terdukung: usize,
+    pub fakta_diragukan: usize,
+    pub fakta_takterverifikasi: usize,
     pub penilaian: Option<&'static str>,
 }
 
@@ -442,6 +533,19 @@ impl RiwayatEntry {
     pub fn from_session(s: &Session) -> Self {
         let turns_bertanda = s.transcript.all().iter().filter(|t| !t.flags.is_empty()).count();
         let klaim_sepi = s.claims.iter().filter(|c| c.status == ClaimStatus::Hidup).count();
+        let fakta_total = s.claims.iter().filter(|c| c.kind == ClaimKind::Faktual).count();
+        let mut fakta_terdukung = 0;
+        let mut fakta_diragukan = 0;
+        let mut fakta_takterverifikasi = 0;
+        for c in &s.claims {
+            if let Some(fc) = &c.fact_check {
+                match fc.verdict {
+                    FactVerdict::Terdukung => fakta_terdukung += 1,
+                    FactVerdict::Diragukan => fakta_diragukan += 1,
+                    FactVerdict::TidakBisaVerifikasi => fakta_takterverifikasi += 1,
+                }
+            }
+        }
         RiwayatEntry {
             id: s.id.clone(),
             topik: s.topic.clone(),
@@ -456,6 +560,10 @@ impl RiwayatEntry {
             turns_bertanda,
             klaim_total: s.claims.len(),
             klaim_sepi,
+            fakta_total,
+            fakta_terdukung,
+            fakta_diragukan,
+            fakta_takterverifikasi,
             penilaian: s.penilaian.map(penilaian_label),
         }
     }

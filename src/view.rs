@@ -93,18 +93,23 @@ pub enum Phase {
     CrossExamAsk,
     CrossExamAnswer,
     Crux,
+    /// Between Crux and Sintesis: classify each claim (faktual/opini) and, for
+    /// faktual ones, cross-check them against the model's own knowledge (§9
+    /// Tahap 4). Not a debate phase — no debater turns, no view rules.
+    FactCheck,
     Sintesis,
     Selesai,
 }
 
 impl Phase {
-    pub const ALL: [Phase; 8] = [
+    pub const ALL: [Phase; 9] = [
         Phase::Framing,
         Phase::Opening,
         Phase::Rebuttal,
         Phase::CrossExamAsk,
         Phase::CrossExamAnswer,
         Phase::Crux,
+        Phase::FactCheck,
         Phase::Sintesis,
         Phase::Selesai,
     ];
@@ -117,6 +122,7 @@ impl Phase {
             Phase::CrossExamAsk => "Cross-exam: bertanya",
             Phase::CrossExamAnswer => "Cross-exam: menjawab",
             Phase::Crux => "Crux",
+            Phase::FactCheck => "Fact-check",
             Phase::Sintesis => "Sintesis",
             Phase::Selesai => "Selesai",
         }
@@ -129,6 +135,7 @@ impl Phase {
             Phase::Framing
             | Phase::Opening
             | Phase::Crux
+            | Phase::FactCheck
             | Phase::Sintesis
             | Phase::Selesai => false,
         }
@@ -141,7 +148,8 @@ impl Phase {
             Phase::Rebuttal => Some(Phase::CrossExamAsk),
             Phase::CrossExamAsk => Some(Phase::CrossExamAnswer),
             Phase::CrossExamAnswer => Some(Phase::Crux),
-            Phase::Crux => Some(Phase::Sintesis),
+            Phase::Crux => Some(Phase::FactCheck),
+            Phase::FactCheck => Some(Phase::Sintesis),
             Phase::Sintesis => Some(Phase::Selesai),
             Phase::Selesai => None,
         }
@@ -152,7 +160,7 @@ impl Phase {
 /// while leaving them stale. These force that mistake to fail the build instead
 /// (E0080 at compile time, not a wrong answer at runtime).
 const _: () = {
-    assert!(Phase::ALL.len() == 8, "Phase::ALL is out of sync with Phase");
+    assert!(Phase::ALL.len() == 9, "Phase::ALL is out of sync with Phase");
     assert!(Role::ALL.len() == 4, "Role::ALL is out of sync with Role");
     assert!(Side::ALL.len() == 2, "Side::ALL is out of sync with Side");
 };
@@ -236,6 +244,12 @@ pub fn build_view<'t>(t: &'t Transcript, phase: Phase, role: Role, round: u32) -
         //     disagreement.
         (Phase::Crux, Role::Debater(_)) => View::Turns(t.all()),
         (Phase::Crux, Role::Moderator | Role::Synthesizer) => View::Silent,
+
+        // --- FactCheck: an auxiliary sweep that classifies each Claim and
+        //     verifies the faktual ones. It reads from `Session.claims`, not
+        //     from the transcript, and writes to those claims — no turns are
+        //     produced, so every role is Silent here. See Engine::fact_check.
+        (Phase::FactCheck, Role::Debater(_) | Role::Moderator | Role::Synthesizer) => View::Silent,
 
         // --- Sintesis: the synthesizer reads everything. The debaters are done.
         (Phase::Sintesis, Role::Synthesizer) => View::Turns(t.all()),

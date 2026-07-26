@@ -39,7 +39,7 @@ header.top nav a:hover { color: var(--ink); }
 h2 { font-size: 22px; font-weight: normal; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 
 label { display: block; font-size: 14px; color: var(--muted); margin: 16px 0 5px; }
-textarea, input[type=text], input[type=number] {
+textarea, input[type=text], input[type=number], select {
   width: 100%; padding: 10px 12px; font: inherit; font-size: 15px;
   border: 1px solid var(--line); background: #fff; border-radius: 3px;
 }
@@ -140,7 +140,7 @@ details.klaim summary { cursor: pointer; font-size: 14px; font-weight: bold; col
    nobody answered outranks what was resolved. */
 .ksection.ksepi .khead { color: var(--warn); }
 .krow {
-  display: grid; grid-template-columns: 42px 66px 1fr auto; gap: 10px; align-items: baseline;
+  display: grid; grid-template-columns: 42px 66px 1fr auto auto; gap: 10px; align-items: baseline;
   padding: 6px 8px; border-radius: 3px; font-size: 14px;
 }
 .ksection.ksepi .krow { background: var(--warnbg); margin-bottom: 4px; }
@@ -154,6 +154,25 @@ details.klaim summary { cursor: pointer; font-size: 14px; font-weight: bold; col
    withdrawn at a glance. */
 .krow.kst-diabaikan .ktext { text-decoration: line-through; opacity: .7; }
 .krow.kst-diabaikan .kstatus { color: var(--kontra); font-weight: bold; }
+
+/* Fact-check badge (Tahap 4). Small chip that flags "check this yourself" —
+   §1 forbids treating it as a winner signal, and the colour set matches that:
+   diragukan is loud (this is the one worth acting on), terdukung is quiet
+   (an absence of contradiction is not proof), tak-terverifikasi and opini fade
+   into the row so they don't compete for attention. Cursor:help so the
+   catatan-in-title tooltip is discoverable. */
+.fbadge {
+  font-size: 11px; padding: 2px 7px; border-radius: 2px; white-space: nowrap;
+  cursor: help; border: 1px solid transparent;
+}
+.fb-terdukung { background: #e3efe0; color: #2b5e2b; border-color: #c5dcbf; }
+.fb-diragukan { background: #f7e6c8; color: #8a5a10; border-color: #e9cf9e; font-weight: 600; }
+.fb-tak-terverifikasi { background: #eee; color: var(--muted); }
+.fb-opini, .fb-belum { color: var(--muted); font-style: italic; }
+
+/* Fact-check aggregate column at /riwayat. Small monospace so 8✓ 2⚠ 1? / 11
+   scans as a compact shape rather than prose. */
+td.fakta { font-size: 12px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; white-space: nowrap; }
 
 @media (max-width: 820px) {
   .cols { flex-direction: column; }

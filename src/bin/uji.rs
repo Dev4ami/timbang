@@ -176,6 +176,46 @@ async fn jalan() -> anyhow::Result<()> {
             println!("{}", render::sesi_ke_markdown(&s));
         }
 
+        "fact-check" => {
+            // Rerunnable in place: fact-check writes to Claim.kind/fact_check,
+            // both serde-defaultable, so an older session missing these fields
+            // reads back as unclassified and this command fills them in without
+            // touching turns or claim status.
+            let id = args.get(1).cloned().unwrap_or_default();
+            if id.is_empty() {
+                anyhow::bail!("pakai: uji fact-check <id_sesi>");
+            }
+            let path = cfg.sessions_dir.join(format!("{id}.json"));
+            let mut s = muat(&path).await?;
+            if s.claims.is_empty() {
+                anyhow::bail!("sesi ini belum punya klaim terlacak");
+            }
+            println!("Fact-check {} klaim dengan model {}\n", s.claims.len(), s.config_used.models.fact_checker().as_str());
+            let eng = mesin(&cfg).await?;
+            eng.jalankan_fact_check(&mut s).await?;
+            simpan(&s, &cfg.sessions_dir).await?;
+            println!("\n{}", "─".repeat(60));
+            for c in &s.claims {
+                let (mark, catatan) = match (&c.kind, &c.fact_check) {
+                    (timbang::transcript::ClaimKind::Faktual, Some(fc)) => {
+                        let m = match fc.verdict {
+                            timbang::transcript::FactVerdict::Terdukung => "✓ terdukung",
+                            timbang::transcript::FactVerdict::Diragukan => "⚠ diragukan",
+                            timbang::transcript::FactVerdict::TidakBisaVerifikasi => "? tak-terverifikasi",
+                        };
+                        (m, fc.catatan.as_str())
+                    }
+                    (timbang::transcript::ClaimKind::Faktual, None) => ("faktual (belum diperiksa)", ""),
+                    (timbang::transcript::ClaimKind::Opini, _) => ("· opini", ""),
+                    (timbang::transcript::ClaimKind::BelumDiklasifikasi, _) => ("? tak diklasifikasi", ""),
+                };
+                println!("  {} [{}] {}", c.id, mark, c.text);
+                if !catatan.is_empty() {
+                    println!("      → {catatan}");
+                }
+            }
+        }
+
         "nilai" => {
             let id = args.get(1).cloned().unwrap_or_default();
             let v = args.get(2).map(|s| s.as_str()).unwrap_or("");
@@ -199,6 +239,7 @@ async fn jalan() -> anyhow::Result<()> {
                  uji ulang <id_sesi>               lanjutkan sesi yang berhenti di tengah\n\
                  uji jalan \"<topik>\"               framing + pilih #1 otomatis + jalan\n\
                  uji lihat <id_sesi>               cetak sesi tersimpan sebagai markdown\n\
+                 uji fact-check <id_sesi>          jalankan (ulang) fact-check di sesi tersimpan\n\
                  uji nilai <id_sesi> <kepakai|setengah|tidak>\n\
                  uji model                         daftar model di router\n\
                  uji sehat                         tes koneksi"

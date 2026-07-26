@@ -1,0 +1,9 @@
+target/
+.env
+sesi/
+uji-prompt-hasil.txt
+.git/
+.github/
+*.md
+!prompts/*.md
+.claude/

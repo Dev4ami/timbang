@@ -104,6 +104,22 @@ pub struct Models {
     pub kontra: ModelId,
     pub moderator: ModelId,
     pub synthesizer: ModelId,
+    /// Runs after Crux to classify claims and check the factual ones (Tahap 4).
+    /// `serde(default)` falls back to synthesizer when absent, so sessions and
+    /// configs written before Tahap 4 still parse — that is the whole point of
+    /// keeping this field optional at the wire layer even though the code below
+    /// always sees a concrete model.
+    #[serde(default)]
+    pub fact_checker: Option<ModelId>,
+}
+
+impl Models {
+    /// Concrete fact-checker id: the configured one, or a copy of the
+    /// synthesizer as fallback. Kept as a method so every call site agrees on
+    /// the same fallback rule.
+    pub fn fact_checker(&self) -> &ModelId {
+        self.fact_checker.as_ref().unwrap_or(&self.synthesizer)
+    }
 }
 
 /// The settings a session actually ran with, copied into its file (§3).
@@ -130,6 +146,7 @@ impl SessionConfig {
                 kontra: ModelId::new("uji/kontra"),
                 moderator: ModelId::new("uji/moderator"),
                 synthesizer: ModelId::new("uji/synthesizer"),
+                fact_checker: None,
             },
             rounds: 3,
             word_limit: 200,
@@ -189,7 +206,16 @@ impl Config {
         let text = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| ConfigError::ConfigTidakTerbaca(path.display().to_string(), e))?;
-        let cfg: Config = toml::from_str(&text)?;
+        let mut cfg: Config = toml::from_str(&text)?;
+        // TIMBANG_BIND overrides the file at runtime — the one setting a
+        // deploy environment (Coolify, docker-compose) needs to inject without
+        // rebuilding the image. Other secrets go through their own env vars
+        // already; adding one for bind keeps config.toml the local default.
+        if let Ok(v) = std::env::var("TIMBANG_BIND") {
+            if !v.trim().is_empty() {
+                cfg.bind = v.trim().to_string();
+            }
+        }
         cfg.periksa()?;
         Ok(cfg)
     }
@@ -206,10 +232,26 @@ impl Config {
                 "similarity_threshold harus antara 0.0 dan 1.0",
             ));
         }
-        // Binding to 0.0.0.0 would expose the debate — and the server that holds
-        // the key — to the whole network (§6).
-        if !self.bind.starts_with("127.0.0.1") && !self.bind.starts_with("localhost") {
-            return Err(ConfigError::NilaiSalah("bind harus 127.0.0.1, bukan 0.0.0.0"));
+        // Loopback by default (§6): binding wider would expose the server that
+        // holds the key to the whole network. The one legitimate reason to bind
+        // 0.0.0.0 is running inside a container behind a reverse proxy that
+        // handles auth (Coolify + Cloudflare Access, etc.) — in that case the
+        // container's network is private and the public path is auth-gated
+        // upstream, not inside this app. The env var is a foot-gun guard: a
+        // stray `cargo run` on a laptop keeps the loopback pin without needing
+        // the operator to remember to change the config back.
+        let loopback = self.bind.starts_with("127.0.0.1") || self.bind.starts_with("localhost");
+        let public_bind_allowed = std::env::var("TIMBANG_ALLOW_PUBLIC_BIND")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if !loopback && !public_bind_allowed {
+            return Err(ConfigError::BindNonLoopback);
+        }
+        if !loopback {
+            eprintln!(
+                "\n⚠ Timbang bind ke {} (bukan loopback).\n  Ini boleh HANYA kalau ada auth di depan\n  (mis. Cloudflare Access). Tanpa itu, siapa pun di jaringan\n  bisa habiskan credit router lewat aplikasi ini.\n",
+                self.bind
+            );
         }
         self.untuk_sesi().periksa_lawan_sepadan()
     }
@@ -258,6 +300,10 @@ pub struct Prompts {
     /// its own it abandoned. A separate request per turn — the accurate approach
     /// §11 recommends over asking debaters to number their own claims.
     pub ekstraksi: String,
+    /// Fact-check pass over one Claim at a time (Tahap 4): classify
+    /// faktual/opini, and for faktual claims say Terdukung/Diragukan/
+    /// TidakBisaVerifikasi with a short note the user can act on.
+    pub fact_check: String,
 }
 
 impl Prompts {
@@ -275,6 +321,7 @@ impl Prompts {
             synthesizer: baca(dir, "synthesizer.md").await?,
             teguran: baca(dir, "teguran.md").await?,
             ekstraksi: baca(dir, "ekstraksi.md").await?,
+            fact_check: baca(dir, "fact-check.md").await?,
         })
     }
 
@@ -315,6 +362,11 @@ pub enum ConfigError {
     PromptTidakTerbaca(String, #[source] std::io::Error),
     #[error("config salah: {0}")]
     NilaiSalah(&'static str),
+    #[error(
+        "bind bukan loopback tanpa TIMBANG_ALLOW_PUBLIC_BIND=1. \
+         Set env var itu HANYA kalau ada auth di depan (Cloudflare Access, dst)."
+    )]
+    BindNonLoopback,
     #[error("Pro dan Kontra memakai model yang sama ({0}). Debat butuh dua model berbeda.")]
     DebaterSama(String),
     #[error(

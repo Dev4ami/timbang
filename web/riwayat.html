@@ -30,9 +30,18 @@ async function load() {
     <th>Topik / klaim</th><th>Status</th><th>Pro vs Kontra</th>
     <th>Ronde</th><th>Turn</th><th>Bertanda</th>
     <th title="klaim tak pernah dijawab / total klaim terlacak — rasio tinggi di semua sesi berarti fase rebuttal kurang mengikat (§8)">Klaim sepi</th>
+    <th title="ringkasan fact-check klaim faktual: terdukung ✓ / diragukan ⚠ / tak-terverifikasi ? · agregat total, bukan per-sisi (§10)">Fakta</th>
     <th>Mulai</th></tr></thead><tbody>`;
   list.forEach(s => {
     const sepi = (s.klaim_total ? `${s.klaim_sepi}/${s.klaim_total}` : '—');
+    // Fact-check aggregate. Deliberately not "Pro N%, Kontra M%" — that would
+    // read like a score, which §10 forbids. Just the counts across all
+    // faktual claims, so the reader can see whether the topic is grounded in
+    // checkable facts at all (fakta_total near zero → mostly opini).
+    let fakta = '—';
+    if (s.fakta_total) {
+      fakta = `${s.fakta_terdukung}✓ ${s.fakta_diragukan}⚠ ${s.fakta_takterverifikasi}? / ${s.fakta_total}`;
+    }
     html += `<tr>
       <td><a href="/sesi/${s.id}">${esc(s.klaim || s.topik)}</a></td>
       <td><span class="tag">${esc(s.status_label)}</span></td>
@@ -41,6 +50,7 @@ async function load() {
       <td>${s.turns}</td>
       <td>${s.turns_bertanda}</td>
       <td class="${s.klaim_sepi ? 'sepi' : ''}">${sepi}</td>
+      <td class="fakta">${fakta}</td>
       <td>${esc((s.created_at||'').slice(0,16).replace('T',' '))}</td>
     </tr>`;
   });
