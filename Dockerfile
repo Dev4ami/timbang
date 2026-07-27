@@ -5,7 +5,7 @@
 # binary needs to serve. `prompts/`, `config.toml`, and `sesi/` are copied into
 # the image; runtime overrides go through env vars and volume mounts.
 
-FROM rust:1.83-bookworm AS build
+FROM rust:1.90-bookworm AS build
 WORKDIR /src
 
 # Prime the dependency cache: copy manifests, build a dummy target, then swap
