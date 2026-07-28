@@ -10,6 +10,7 @@ WORKDIR /src
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY web ./web
 COPY prompts ./prompts
 COPY config.toml ./config.toml
 
