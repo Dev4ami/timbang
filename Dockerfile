@@ -8,20 +8,15 @@
 FROM rust:1.90-bookworm AS build
 WORKDIR /src
 
-# Prime the dependency cache: copy manifests, build a dummy target, then swap
-# in real sources. Any dependency-only change reuses this layer.
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src/bin \
-    && echo "fn main() {}" > src/bin/web.rs \
-    && echo "fn main() {}" > src/bin/uji.rs \
-    && echo "pub fn stub() {}" > src/lib.rs \
-    && cargo build --release --bin web \
-    && rm -rf src target/release/deps/timbang* target/release/web*
-
 COPY src ./src
 COPY prompts ./prompts
 COPY config.toml ./config.toml
-RUN cargo build --release --bin web
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --bin web \
+    && cp target/release/web /web
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -29,7 +24,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=build /src/target/release/web /app/web
+COPY --from=build /web /app/web
 COPY prompts /app/prompts
 COPY config.toml /app/config.toml
 
