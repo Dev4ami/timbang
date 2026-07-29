@@ -53,6 +53,9 @@ function head() {
   if (claims.some(c => c.verdict_key || c.kind_key === 'opini')) {
     active.add('Fact-check');
   }
+  // Selesai never emits a turn, so it can only be lit from status. The debate
+  // reaches this state after Crux+Fact-check, before synthesis is run by hand.
+  if (meta.status === 'selesai') { active.add('Selesai'); }
   strip.innerHTML = FASE.map(f => `<span class="${active.has(f)?'on':''}">${f}</span>`).join('');
 }
 
@@ -230,6 +233,7 @@ async function jalankanSintesis() {
     }
     const turn = await r.json();
     turns.set(turn.index, turn);             // filtered out of the stream; only the panel reads it
+    head();                                  // relight the strip: the Sintesis turn now exists
     renderPanel();
   } catch (e) {
     btn.disabled = false;
