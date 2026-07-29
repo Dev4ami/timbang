@@ -157,8 +157,21 @@ button:disabled { opacity: .45; cursor: default; }
 }
 .audiobtn:hover:not(:disabled) { color: var(--ink); border-color: var(--muted); }
 .audiobtn:disabled { cursor: default; opacity: .7; }
-.audioslot audio { height: 30px; max-width: 240px; }
+.audiobtn.aktif { color: var(--ink); border-color: var(--ink); font-weight: 600; }
 .audio-err { font-size: 12px; color: var(--kontra); }
+
+/* One persistent player, pinned to the bottom. It lives outside #body so a live
+   re-render never destroys it — that is what keeps audio playing while a new
+   turn streams in, and lets one turn play while another is generated. */
+#playerbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 20px; background: var(--surface); border-top: 1px solid var(--line);
+  box-shadow: 0 -2px 8px rgba(0,0,0,.06);
+}
+#playerbar[hidden] { display: none; }
+#playerbar .playerlabel { font-size: 13px; color: var(--muted); white-space: nowrap; }
+#playerbar audio { height: 34px; flex: 1; max-width: 620px; }
 
 .endmark { text-align: center; color: var(--muted); font-size: 14px; margin: 30px 0 6px; padding: 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .endmark.gagal { color: var(--kontra); }

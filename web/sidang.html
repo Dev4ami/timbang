@@ -26,6 +26,15 @@
   </details>
 </div>
 
+<!-- One persistent player, deliberately OUTSIDE #body so a live turn re-render
+     (SSE) never destroys it — that was the bug where playing audio cut out. It
+     also lets one turn keep playing while another is being generated. -->
+<div id="playerbar" hidden>
+  <span id="playerlabel" class="playerlabel"></span>
+  <audio id="player" controls></audio>
+  <button id="playerclose" class="audiobtn" type="button" onclick="tutupPlayer()">tutup</button>
+</div>
+
 <script>
 const id = location.pathname.split('/')[2];
 const FASE = ['Framing','Opening','Rebuttal','Cross-exam: bertanya','Cross-exam: menjawab','Crux','Fact-check','Sintesis','Selesai'];
@@ -197,24 +206,72 @@ function card(t, cls) {
 // convenience for the ear, not a signal: nothing here plays on its own and there
 // is no summary voice — you press it for the turn you want (§1). Voices differ by
 // side server-side, so Pro and Kontra sound distinct without the screen (§7).
+//
+// State lives in `audioState` (keyed by turn index), NOT in the DOM, so it
+// survives the live re-render that rebuilds #body on every SSE turn — the button
+// redraws in the right state instead of resetting. The actual <audio> is the one
+// persistent #player outside #body, so playback never cuts out on re-render and
+// one turn can keep playing while another is generated.
+const audioState = new Map();   // index -> 'menyiapkan' | 'siap' | 'gagal'
+let playingIndex = null;        // which turn the global player currently holds
+
 function audioBtn(index) {
-  return `<span class="audioslot"><button class="audiobtn" onclick="dengarTurn(${index}, this)">🔊 dengar</button></span>`;
+  const st = audioState.get(index);
+  let label = '🔊 dengar', extra = '';
+  if (st === 'menyiapkan') { label = '⏳ menyiapkan…'; extra = ' disabled'; }
+  else if (st === 'siap')  { label = playingIndex === index ? '▶ diputar' : '🔊 putar lagi'; }
+  else if (st === 'gagal') { label = '🔊 coba lagi'; }
+  const err = st === 'gagal' && lastAudioErr ? `<span class="audio-err">${esc(lastAudioErr)}</span>` : '';
+  return `<span class="audioslot"><button class="audiobtn${playingIndex===index?' aktif':''}"${extra} onclick="dengarTurn(${index})">${label}</button>${err}</span>`;
 }
 
-async function dengarTurn(index, btn) {
-  const slot = btn.parentElement;   // span.audioslot — its content is the button or, once ready, the player
-  btn.disabled = true;
-  btn.textContent = '⏳ menyiapkan…';
+async function dengarTurn(index) {
+  // Already prepared: just (re)play in the global player — no request at all.
+  if (audioState.get(index) === 'siap') { mainkan(index); return; }
+  // Guard: a second click while the first request is in flight does nothing, so
+  // rapid clicks never fan out into duplicate POSTs (the server is idempotent
+  // anyway, but this avoids the round-trips entirely).
+  if (audioState.get(index) === 'menyiapkan') return;
+
+  audioState.set(index, 'menyiapkan');
+  render();   // reflect the ⏳ state; other turns keep playing untouched
   try {
     // POST generates and caches on the server; a second press (or one after a
     // refresh) is instant because the server returns the cached file.
     const r = await fetch('/api/sesi/' + id + '/audio/' + index, { method: 'POST' });
     if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || ('gagal ' + r.status)); }
-    slot.innerHTML = `<audio controls autoplay src="/api/sesi/${id}/audio/${index}"></audio>`;
+    audioState.set(index, 'siap');
+    mainkan(index);   // this both swaps the player source and re-renders buttons
   } catch (e) {
-    slot.innerHTML = `<button class="audiobtn" onclick="dengarTurn(${index}, this)">🔊 coba lagi</button>` +
-      `<span class="audio-err">${esc(e.message)}</span>`;
+    audioState.set(index, 'gagal');
+    lastAudioErr = e.message;
+    render();
   }
+}
+let lastAudioErr = '';
+
+// Point the one persistent player at a turn and play it. Swapping src here (not
+// creating a new <audio>) is what lets playback continue across re-renders.
+function mainkan(index) {
+  const bar = document.getElementById('playerbar');
+  const player = document.getElementById('player');
+  const label = document.getElementById('playerlabel');
+  const t = turns.get(index);
+  const sisi = t ? ({pro:'Pro', kontra:'Kontra', moderator:'Moderator', sintesis:'Sintesis'}[t.side] || '') : '';
+  label.textContent = sisi ? `▶ ${sisi}` : '▶';
+  player.src = '/api/sesi/' + id + '/audio/' + index;
+  bar.hidden = false;
+  playingIndex = index;
+  player.play().catch(() => {});   // autoplay may be blocked; controls still work
+  render();                        // update which button shows "diputar"
+}
+
+function tutupPlayer() {
+  const player = document.getElementById('player');
+  player.pause();
+  document.getElementById('playerbar').hidden = true;
+  playingIndex = null;
+  render();
 }
 
 // The synthesis panel (§1): shut until the debate is done, and never runs by
@@ -298,6 +355,10 @@ function mdMini(src) {
 }
 
 function addTurn(t){ turns.set(t.index, t); render(); }
+
+// When playback finishes, drop the "diputar" mark so the button reads "putar
+// lagi" — the audio stays cached, only the now-playing state clears.
+document.getElementById('player').addEventListener('ended', () => { playingIndex = null; render(); });
 
 async function load() {
   const r = await fetch('/api/sesi/' + id);
