@@ -4,12 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sidang — Timbang</title>
+<script>document.documentElement.dataset.theme=localStorage.getItem('tema')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')</script>
 <link rel="stylesheet" href="/style.css">
+<script src="/theme.js" defer></script>
 </head>
 <body>
 <header class="top"><div class="wrap">
   <h1>TIMBANG</h1>
-  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a></nav>
+  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a><button id="tema" class="tema" type="button">☾ gelap</button></nav>
 </div></header>
 
 <div class="wrap">
@@ -18,11 +20,9 @@
   <div id="klaimpanel"></div>
   <div id="body"><div class="notice">memuat…</div></div>
 
-  <details class="panel">
+  <details class="panel" id="panelsintesis">
     <summary>Sintesis &amp; crux — dibuka manual</summary>
-    <p class="muted">Panel ini sengaja tertutup sampai seluruh debat selesai, dan tidak terbuka
-    sendiri. Kalau ringkasan muncul di atas, seluruh transkrip jadi hiasan. Sintesis belum
-    dijalankan pada tahap ini.</p>
+    <div id="sintesisisi"></div>
   </details>
 </div>
 
@@ -119,8 +119,12 @@ function krow(c) {
 function render() {
   head();
   renderKlaim();
+  renderPanel();
   const body = document.getElementById('body');
-  const list = [...turns.values()].sort((a,b) => a.index - b.index);
+  // Synthesis is kept OUT of the transcript stream on purpose (§1): it lives
+  // only in the manual panel below, never at the top of the record. Filtering
+  // here rather than server-side keeps the from-disk and live views identical.
+  const list = [...turns.values()].filter(t => t.side !== 'sintesis').sort((a,b) => a.index - b.index);
   if (!list.length) { body.innerHTML = '<div class="notice">menunggu giliran pertama…</div>'; return; }
 
   // Group consecutive turns by (phase, round). Moderator/sintesis render full
@@ -135,7 +139,7 @@ function render() {
   groups.forEach(g => {
     const title = g.per ? `${g.phase} · ronde ${g.round}` : g.phase;
     html += `<section class="fase"><h3>${esc(title)}</h3>`;
-    const full = g.turns.filter(t => t.side==='moderator' || t.side==='sintesis');
+    const full = g.turns.filter(t => t.side==='moderator');
     const pro = g.turns.filter(t => t.side==='pro');
     const kontra = g.turns.filter(t => t.side==='kontra');
     full.forEach(t => html += card(t, 'full'));
@@ -155,7 +159,7 @@ function render() {
   // read), so the last visible phase is still Crux.
   if (meta.status === 'selesai') {
     html += `<div class="endmark">◆ Debat selesai — argumen berhenti di Crux.
-      Fact-check klaim ada di panel status klaim. Sintesis belum dijalankan.</div>`;
+      Fact-check klaim ada di panel status klaim. Buka panel Sintesis di bawah untuk menjalankannya.</div>`;
   } else if (meta.status === 'gagal') {
     html += `<div class="endmark gagal">■ Sesi berhenti di tengah. Transkrip sampai sini aman;
       sesi bisa dilanjutkan.</div>`;
@@ -183,6 +187,84 @@ function card(t, cls) {
 
   return `<div class="turn ${cls}">${w}<div class="text">${esc(t.text)}</div>
     ${chip}<div class="foot">${t.word_count} kata${t.truncated?' · terpotong':''}</div></div>`;
+}
+
+// The synthesis panel (§1): shut until the debate is done, and never runs by
+// itself — the user opens it and clicks. Three states: locked (debate not
+// finished), a run button (finished, no synthesis yet), or the rendered map of
+// arguments (synthesis exists). It lives here and nowhere else; there is no
+// summary at the top of the page.
+function renderPanel() {
+  const el = document.getElementById('sintesisisi');
+  if (!el) return;
+  const sint = [...turns.values()].find(t => t.side === 'sintesis');
+
+  if (sint) {
+    el.innerHTML = `<div class="sintesis">${mdMini(sint.text)}</div>`;
+    return;
+  }
+  if (meta.status !== 'selesai') {
+    el.innerHTML = `<p class="muted">Panel ini sengaja tertutup sampai seluruh debat selesai,
+      dan tidak terbuka sendiri. Kalau ringkasan muncul di atas, seluruh transkrip jadi hiasan.</p>`;
+    return;
+  }
+  el.innerHTML = `<p class="muted">Debat selesai. Sintesis membaca seluruh transkrip lalu menyusun
+    <em>peta argumen</em> — bukan pemenang, bukan skor. Jalankan saat kamu sudah membaca transkrip
+    sendiri, bukan sebagai gantinya.</p>
+    <button id="btnsintesis">Jalankan sintesis</button>
+    <div id="sintesiserr" class="err" hidden></div>`;
+  document.getElementById('btnsintesis').addEventListener('click', jalankanSintesis);
+}
+
+async function jalankanSintesis() {
+  const btn = document.getElementById('btnsintesis');
+  const err = document.getElementById('sintesiserr');
+  err.hidden = true;
+  btn.disabled = true;                       // guard against a double click
+  btn.textContent = 'menjalankan sintesis…';
+  try {
+    const r = await fetch('/api/sesi/' + id + '/sintesis', { method: 'POST' });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.error || ('gagal (' + r.status + ')'));
+    }
+    const turn = await r.json();
+    turns.set(turn.index, turn);             // filtered out of the stream; only the panel reads it
+    renderPanel();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Jalankan sintesis';
+    err.hidden = false;
+    err.textContent = e.message;
+  }
+}
+
+// Minimal markdown for the synthesis text — plain JS, no framework (§7). Handles
+// only what synthesizer.md emits: ### headings, - bullets, **bold**, blank-line
+// paragraphs. Everything is escaped before any tag is added, so model output
+// cannot inject HTML.
+function mdMini(src) {
+  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  const lines = (src || '').split('\n');
+  let out = '', list = false;
+  const closeList = () => { if (list) { out += '</ul>'; list = false; } };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^#{1,6}\s+/.test(line)) {
+      closeList();
+      out += `<h4>${inline(line.replace(/^#{1,6}\s+/, ''))}</h4>`;
+    } else if (/^[-*]\s+/.test(line)) {
+      if (!list) { out += '<ul>'; list = true; }
+      out += `<li>${inline(line.replace(/^[-*]\s+/, ''))}</li>`;
+    } else if (line.trim() === '') {
+      closeList();
+    } else {
+      closeList();
+      out += `<p>${inline(line)}</p>`;
+    }
+  }
+  closeList();
+  return out;
 }
 
 function addTurn(t){ turns.set(t.index, t); render(); }

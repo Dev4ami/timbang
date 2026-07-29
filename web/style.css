@@ -6,6 +6,9 @@
   --muted: #6b6b6b;
   --line: #d8d4cc;
   --paper: #f7f5f0;
+  --surface: #fff;        /* turn cards, inputs, claim panel */
+  --surface-2: #fbf9f5;   /* synthesis panel */
+  --chip-bg: #ece8e0;     /* meta code, tags */
   --pro: #1d4e6f;
   --kontra: #7a2e2e;
   --warn: #9a6a00;
@@ -13,16 +16,43 @@
   --maxw: 1180px;
 }
 
+/* Dark theme — a warm dark that keeps the "document" feel, not a black terminal.
+   Only the palette flips here; light output above is untouched. Pro stays blue
+   and Kontra stays red (§7 uses side colour for orientation, not ranking), only
+   lightened so they read on a dark ground. A handful of rules that still carry a
+   hardcoded light background are re-stated further down under this same selector. */
+:root[data-theme="dark"] {
+  --ink: #e7e3da;
+  --muted: #9a9488;
+  --line: #38352f;
+  --paper: #1b1a17;
+  --surface: #24221d;
+  --surface-2: #201e1a;
+  --chip-bg: #302d27;
+  --pro: #6ea6d4;
+  --kontra: #d98d8d;
+  --warn: #d4a24a;
+  --warnbg: #3a2f18;
+}
+
 * { box-sizing: border-box; }
+
+/* Tell the browser which theme is active so native bits — scrollbars, form
+   controls, the URL-bar caret — match instead of staying light. */
+:root { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
   font: 16px/1.6 Georgia, "Times New Roman", serif;
+  /* A gentle cross-fade when toggling, not an instant snap. */
+  transition: background-color .2s ease, color .2s ease;
 }
 
-a { color: var(--pro); }
+a { color: var(--pro); text-decoration-color: color-mix(in srgb, var(--pro) 35%, transparent); }
+a:hover { text-decoration-color: currentColor; }
 
 .wrap { max-width: var(--maxw); margin: 0 auto; padding: 24px 20px 80px; }
 
@@ -33,24 +63,43 @@ header.top {
 header.top .wrap { padding: 14px 20px; display: flex; align-items: baseline; gap: 20px; }
 header.top h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
 header.top nav { margin-left: auto; display: flex; gap: 18px; font-size: 15px; }
-header.top nav a { color: var(--muted); text-decoration: none; }
+header.top nav { align-items: baseline; }
+header.top nav a { color: var(--muted); text-decoration: none; transition: color .15s ease; }
 header.top nav a:hover { color: var(--ink); }
+/* Theme toggle sits in the nav and must read as a nav link, not the solid dark
+   button the global button rule would give it. */
+.tema { background: none; border: none; color: var(--muted); font: inherit; font-size: 15px; cursor: pointer; padding: 0; transition: color .15s ease; }
+.tema:hover { color: var(--ink); opacity: 1; }
+/* Keyboard focus ring — visible for tab users, absent for mouse clicks. */
+a:focus-visible, button:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--pro); outline-offset: 3px; border-radius: 2px;
+}
 
 h2 { font-size: 22px; font-weight: normal; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 
 label { display: block; font-size: 14px; color: var(--muted); margin: 16px 0 5px; }
 textarea, input[type=text], input[type=number], select {
   width: 100%; padding: 10px 12px; font: inherit; font-size: 15px;
-  border: 1px solid var(--line); background: #fff; border-radius: 3px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 3px;
 }
 textarea { min-height: 90px; resize: vertical; }
+textarea:focus, input[type=text]:focus, input[type=number]:focus, select:focus {
+  outline: none; border-color: var(--pro);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pro) 18%, transparent);
+}
+textarea::placeholder, input::placeholder { color: var(--muted); opacity: .7; }
 
 button {
   font: inherit; font-size: 15px; padding: 9px 20px; cursor: pointer;
-  background: var(--ink); color: #fff; border: none; border-radius: 3px;
+  /* --paper, not #fff: in dark the ink is a light cream, so a fixed white label
+     would sit light-on-light. Pairing ink with paper keeps the contrast right in
+     both themes — cream-on-ink in light, ink-on-cream in dark. */
+  background: var(--ink); color: var(--paper); border: none; border-radius: 3px;
+  transition: opacity .15s ease, background-color .18s ease;
 }
-button.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
-button:disabled { opacity: .5; cursor: default; }
+button:hover:not(:disabled) { opacity: .86; }
+button.ghost { background: var(--surface); color: var(--ink); border: 1px solid var(--line); }
+button:disabled { opacity: .45; cursor: default; }
 .row { display: flex; gap: 12px; align-items: center; margin-top: 20px; flex-wrap: wrap; }
 
 .muted { color: var(--muted); }
@@ -60,12 +109,12 @@ button:disabled { opacity: .5; cursor: default; }
 /* ── session header ── */
 .klaim { font-size: 22px; line-height: 1.4; margin: 4px 0 14px; }
 .meta { color: var(--muted); font-size: 14px; display: flex; gap: 16px; flex-wrap: wrap; }
-.meta code { background: #ece8e0; padding: 1px 6px; border-radius: 3px; font-size: 13px; }
+.meta code { background: var(--chip-bg); padding: 1px 6px; border-radius: 3px; font-size: 13px; }
 
 .fasestrip { display: flex; gap: 6px; flex-wrap: wrap; margin: 16px 0; }
 .fasestrip span {
   font-size: 12px; padding: 3px 10px; border: 1px solid var(--line);
-  border-radius: 12px; color: var(--muted); background: #fff;
+  border-radius: 12px; color: var(--muted); background: var(--surface);
 }
 .fasestrip span.on { border-color: var(--ink); color: var(--ink); font-weight: bold; }
 .status-pill { font-size: 13px; padding: 2px 10px; border-radius: 12px; }
@@ -86,7 +135,7 @@ button:disabled { opacity: .5; cursor: default; }
 .col.kontra > .colhead { color: var(--kontra); }
 .colhead { font-size: 13px; font-weight: bold; letter-spacing: .5px; }
 
-.turn { border: 1px solid var(--line); background: #fff; border-radius: 4px; padding: 14px 16px; }
+.turn { border: 1px solid var(--line); background: var(--surface); border-radius: 4px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 .turn.pro { border-left: 3px solid var(--pro); }
 .turn.kontra { border-left: 3px solid var(--kontra); }
 .turn.full { border-left: 3px solid var(--muted); }
@@ -99,12 +148,23 @@ button:disabled { opacity: .5; cursor: default; }
 .endmark { text-align: center; color: var(--muted); font-size: 14px; margin: 30px 0 6px; padding: 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .endmark.gagal { color: var(--kontra); }
 
-details.panel { margin-top: 30px; border: 1px dashed var(--line); border-radius: 4px; padding: 6px 16px; background: #fbf9f5; }
-details.panel summary { cursor: pointer; font-size: 15px; color: var(--muted); padding: 8px 0; }
+details.panel { margin-top: 30px; border: 1px dashed var(--line); border-radius: 4px; padding: 6px 16px; background: var(--surface-2); }
+details.panel summary { cursor: pointer; font-size: 15px; color: var(--muted); padding: 8px 0; transition: color .15s ease; }
+details.panel summary:hover { color: var(--ink); }
+details.panel #sintesisisi { padding: 4px 0 12px; }
+
+/* The map of arguments, rendered from the synthesizer's markdown. A reading
+   surface, not a verdict box — no colour that ranks a side, no score styling. */
+.sintesis { color: var(--ink); line-height: 1.6; }
+.sintesis h4 { font-size: 15px; margin: 20px 0 6px; color: var(--ink); border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.sintesis h4:first-child { margin-top: 4px; }
+.sintesis p { margin: 8px 0; }
+.sintesis ul { margin: 8px 0; padding-left: 22px; }
+.sintesis li { margin: 4px 0; }
 
 /* ── framing options ── */
-.opt { border: 1px solid var(--line); background: #fff; border-radius: 4px; padding: 14px 16px; margin: 12px 0; cursor: pointer; display: flex; gap: 12px; }
-.opt:hover { border-color: var(--ink); }
+.opt { border: 1px solid var(--line); background: var(--surface); border-radius: 4px; padding: 14px 16px; margin: 12px 0; cursor: pointer; display: flex; gap: 12px; transition: border-color .15s ease, box-shadow .15s ease; }
+.opt:hover { border-color: var(--pro); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pro) 12%, transparent); }
 .opt input { margin-top: 4px; }
 .opt .bias { color: var(--muted); font-size: 14px; margin-top: 6px; }
 
@@ -113,7 +173,7 @@ table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14p
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: normal; font-size: 13px; }
 td code { font-size: 12px; color: var(--muted); }
-.tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: #ece8e0; color: var(--muted); }
+.tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: var(--chip-bg); color: var(--muted); }
 /* A session where claims went unanswered — a debate-health flag, not a score. */
 td.sepi { color: var(--warn); font-weight: bold; }
 
@@ -130,7 +190,7 @@ td.sepi { color: var(--warn); font-weight: bold; }
 /* ── claim status panel (§3, §7) ── */
 details.klaim {
   margin: 18px 0 4px; border: 1px solid var(--line); border-radius: 4px;
-  background: #fff; padding: 4px 16px;
+  background: var(--surface); padding: 4px 16px;
 }
 details.klaim summary { cursor: pointer; font-size: 14px; font-weight: bold; color: var(--muted); padding: 8px 0; text-transform: uppercase; letter-spacing: .5px; }
 .kbadge { font-weight: normal; font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--muted); margin-left: 8px; }
@@ -178,3 +238,19 @@ td.fakta { font-size: 12px; color: var(--muted); font-family: ui-monospace, Menl
   .cols { flex-direction: column; }
   .turn.full { max-width: none; }
 }
+
+/* ── dark: rules that still carry a hardcoded light background ──
+   Everything above draws from the custom properties, so it flips for free. These
+   few keep an explicit light tint (status pills, chips, fact-check badges) that
+   would glare on a dark ground, so they are re-stated once here. Same meaning,
+   darker skin — the loud/quiet ranking of fact-check verdicts is preserved. */
+:root[data-theme="dark"] .err { background: #3a2020; }
+:root[data-theme="dark"] .status-berjalan { background: #1f3340; }
+:root[data-theme="dark"] .status-selesai { background: #1e3320; color: #8fce8f; }
+:root[data-theme="dark"] .status-gagal { background: #3a2020; }
+:root[data-theme="dark"] .chip { background: #1e3320; color: #8fce8f; border-color: #2f4a2f; }
+:root[data-theme="dark"] .chip.sepi { border-color: #5a4a24; }
+:root[data-theme="dark"] .turn .flag { background: #302d27; }
+:root[data-theme="dark"] .fb-terdukung { background: #1e3320; color: #8fce8f; border-color: #2f4a2f; }
+:root[data-theme="dark"] .fb-diragukan { background: #3a2f18; color: #e2b263; border-color: #5a4a24; }
+:root[data-theme="dark"] .fb-tak-terverifikasi { background: #2a2822; color: var(--muted); }

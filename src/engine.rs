@@ -109,9 +109,11 @@ impl Engine {
             }
 
             // Synthesis is the last thing that happens, and §1 requires it stay
-            // shut until then. Tahap 1 stops before it: the synthesizer prompt
-            // is unwritten, and a placeholder would be a summary appearing early
-            // — precisely the failure the rule exists to prevent.
+            // shut until the whole debate is done AND the user opens it by hand —
+            // an auto-summary at the top makes the transcript decorative. So the
+            // debate loop stops here rather than running the synthesizer: the run
+            // ends at Selesai with no synthesis turn, and `jalankan_sintesis`
+            // produces one later, on-demand, when the user clicks.
             if s.phase == Phase::Sintesis {
                 s.phase = Phase::Selesai;
                 break;
@@ -295,6 +297,68 @@ impl Engine {
         }
 
         Ok(())
+    }
+
+    /// Runs the synthesizer over the finished transcript and appends its turn.
+    ///
+    /// Deliberately NOT part of `jalankan`: §1 requires the synthesis to stay
+    /// shut until the user opens it, so the debate loop stops at Selesai without
+    /// one, and this is called on-demand instead (a web click, or `uji sintesis`).
+    ///
+    /// The synthesizer produces a "map of arguments", never a winner — that rule
+    /// lives entirely in `prompts/synthesizer.md`; this method adds nothing to it.
+    /// It is not a debater, so it clears no bar and takes no retry (like the
+    /// moderator path in `satu_turn`): its output is read, not judged.
+    ///
+    /// Idempotent: a session that already has a synthesis turn returns that turn's
+    /// index unchanged, so a double click never appends a second one.
+    pub async fn jalankan_sintesis(&self, s: &mut Session) -> Result<usize, EngineError> {
+        if let Some(i) = s
+            .transcript
+            .all()
+            .iter()
+            .position(|t| t.phase == Phase::Sintesis)
+        {
+            return Ok(i);
+        }
+
+        let klaim = s.claim.as_deref().unwrap_or(&s.topic);
+
+        // The synthesizer sees the whole transcript — build_view returns exactly
+        // that for (Sintesis, Synthesizer), so the "who sees what" rule stays in
+        // one place (§4) rather than being re-decided here.
+        let view = build_view(&s.transcript, Phase::Sintesis, Role::Synthesizer, 1);
+        let prompt = isi(&self.prompts.synthesizer, &[("klaim", klaim)]);
+        let pesan = vec![
+            Message::system(prompt),
+            Message::user(rangkai_view(&view, klaim)),
+        ];
+
+        // Five sections over the full transcript: a higher floor than a single
+        // debate turn, same generous ceiling reasoning as satu_turn (§8 note there).
+        let max_tokens = (self.cfg.word_limit * 24).max(4000);
+
+        let c = self
+            .client
+            .kirim(&self.cfg.models.synthesizer, &pesan, self.cfg.temperature, max_tokens)
+            .await?;
+
+        let turn = bikin_turn(
+            1,
+            Phase::Sintesis,
+            Role::Synthesizer,
+            &self.cfg.models.synthesizer,
+            &c,
+            0,
+            0,
+            Vec::new(),
+        );
+
+        let idx = s.transcript.len();
+        s.transcript.push(turn);
+        (self.on_turn)(idx, s.transcript.get(idx).unwrap(), &s.claims);
+        simpan(s, &self.sessions_dir).await?;
+        Ok(idx)
     }
 
     /// One turn, including the single quality retry §4 allows.

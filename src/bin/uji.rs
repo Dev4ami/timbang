@@ -216,6 +216,40 @@ async fn jalan() -> anyhow::Result<()> {
             }
         }
 
+        "sintesis" => {
+            // The synthesizer workbench: run the synthesis phase on a finished
+            // session and print the map of arguments. This is where the
+            // synthesizer prompt gets tuned — §2 wants text on a terminal, ten
+            // times in a row, not a browser. Idempotent (jalankan_sintesis
+            // returns the existing turn), so re-running prints the same map
+            // rather than appending a second one; edit the prompt then delete
+            // the turn to re-generate, same as any prompt iteration.
+            let id = args.get(1).cloned().unwrap_or_default();
+            if id.is_empty() {
+                anyhow::bail!("pakai: uji sintesis <id_sesi>");
+            }
+            let path = cfg.sessions_dir.join(format!("{id}.json"));
+            let mut s = muat(&path).await?;
+            if !matches!(s.status, SessionStatus::Selesai) {
+                anyhow::bail!("sesi ini belum selesai — sintesis hanya untuk debat yang tuntas");
+            }
+            println!("Sintesis sesi {} dengan model {}\n", s.id, s.config_used.models.synthesizer.as_str());
+            // No-op on_turn here (unlike `mesin`), so the text is printed once
+            // below rather than twice — and so the idempotent case (turn already
+            // present, no on_turn fires) prints the same way as a fresh run.
+            let prompts = Prompts::muat(&cfg.prompts_dir).await?;
+            let eng = Engine {
+                client: klien(&cfg)?,
+                cfg: cfg.clone(),
+                prompts,
+                sessions_dir: cfg.sessions_dir.clone(),
+                on_turn: Box::new(|_, _, _| {}),
+            };
+            let idx = eng.jalankan_sintesis(&mut s).await?;
+            println!("{}", "─".repeat(60));
+            println!("{}", s.transcript.get(idx).map(|t| t.text.trim()).unwrap_or(""));
+        }
+
         "nilai" => {
             let id = args.get(1).cloned().unwrap_or_default();
             let v = args.get(2).map(|s| s.as_str()).unwrap_or("");
@@ -240,6 +274,7 @@ async fn jalan() -> anyhow::Result<()> {
                  uji jalan \"<topik>\"               framing + pilih #1 otomatis + jalan\n\
                  uji lihat <id_sesi>               cetak sesi tersimpan sebagai markdown\n\
                  uji fact-check <id_sesi>          jalankan (ulang) fact-check di sesi tersimpan\n\
+                 uji sintesis <id_sesi>            jalankan sintesis di sesi selesai, cetak peta argumen\n\
                  uji nilai <id_sesi> <kepakai|setengah|tidak>\n\
                  uji model                         daftar model di router\n\
                  uji sehat                         tes koneksi"

@@ -4,12 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Riwayat — Timbang</title>
+<script>document.documentElement.dataset.theme=localStorage.getItem('tema')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')</script>
 <link rel="stylesheet" href="/style.css">
+<script src="/theme.js" defer></script>
 </head>
 <body>
 <header class="top"><div class="wrap">
   <h1>TIMBANG</h1>
-  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a></nav>
+  <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a><button id="tema" class="tema" type="button">☾ gelap</button></nav>
 </div></header>
 
 <div class="wrap">

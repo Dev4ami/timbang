@@ -110,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/riwayat", get(halaman_riwayat))
         .route("/setting", get(halaman_setting))
         .route("/style.css", get(gaya))
+        .route("/theme.js", get(tema_js))
         // API. Note what is NOT here: no POST/PUT/PATCH to /api/sesi/{id} once a
         // debate is running. The only write to a session is the framing approval
         // below, which happens before the debate starts (§1: no input on the
@@ -117,6 +118,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/baru", post(api_baru))
         .route("/api/sesi/{id}", get(api_sesi))
         .route("/api/sesi/{id}/mulai", post(api_mulai))
+        // Manual synthesis trigger (§1: opened by hand, only after the debate is
+        // done). This writes to a session, but only a `selesai` one — never a
+        // running debate — so the "no writes to a running session" rule holds.
+        .route("/api/sesi/{id}/sintesis", post(api_sintesis))
         .route("/api/riwayat", get(api_riwayat))
         .route("/api/setting", get(api_setting_get).post(api_setting_post))
         .route("/api/sehat", get(api_sehat))
@@ -148,6 +153,9 @@ async fn halaman_setting() -> Html<&'static str> {
 }
 async fn gaya() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../../web/style.css"))
+}
+async fn tema_js() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], include_str!("../../web/theme.js"))
 }
 
 // ─── new debate + framing ────────────────────────────────────────────────────
@@ -284,6 +292,41 @@ async fn api_mulai(
     });
 
     Ok(Json(serde_json::json!({ "ok": true })).into_response())
+}
+
+/// `POST /api/sesi/{id}/sintesis` — run the synthesizer over a finished debate.
+///
+/// The one write to a session that is not framing approval, and it is allowed
+/// only because a `selesai` session is not a running one: §1 forbids input to a
+/// *running* debate, and requires synthesis to be opened by hand once the debate
+/// is done — which is exactly this. A running or failed session is refused.
+///
+/// Synchronous: one request, and the page waits for it. No live channel is
+/// involved — it was dropped when the debate finished (see `api_mulai`), so the
+/// engine's per-turn hook is a no-op here and the fresh turn travels back in the
+/// response body instead.
+async fn api_sintesis(State(st): State<Sd>, Path(id): Path<String>) -> Result<Response, AppError> {
+    let path = st.sessions_dir.join(format!("{id}.json"));
+    let mut s = muat(&path).await.map_err(|_| AppError::not_found())?;
+
+    match s.status {
+        SessionStatus::Selesai => {}
+        SessionStatus::Berjalan => return Err(AppError::bad("debat belum selesai")),
+        SessionStatus::Gagal { .. } => {
+            return Err(AppError::bad("debat berhenti di tengah — tidak bisa disintesis"));
+        }
+        SessionStatus::MenungguPersetujuan => {
+            return Err(AppError::bad("debat belum mulai"));
+        }
+    }
+
+    let eng = mesin(&st, &s.config_used, Box::new(|_, _, _| {}));
+    let idx = eng.jalankan_sintesis(&mut s).await.map_err(AppError::internal)?;
+    let turn = s
+        .transcript
+        .get(idx)
+        .ok_or_else(|| AppError::internal("turn sintesis hilang setelah dibuat"))?;
+    Ok(Json(render::turn_web(idx, turn)).into_response())
 }
 
 // ─── reads ───────────────────────────────────────────────────────────────────
