@@ -145,6 +145,21 @@ button:disabled { opacity: .45; cursor: default; }
 .turn .flag { background: #f2ede1; color: var(--warn); font-size: 12px; padding: 4px 9px; border-radius: 3px; margin-bottom: 6px; display: inline-block; }
 .turn.full { max-width: 760px; margin: 0 auto; }
 
+/* ── read-aloud (aksesibilitas) ── */
+/* Deliberately quiet: audio is a convenience for the ear, not a signal (§1), so
+   the control sits in the corner and does not compete with the argument text. */
+.turnhead { display: flex; justify-content: flex-end; margin-bottom: 6px; min-height: 22px; }
+.audioslot { display: inline-flex; align-items: center; gap: 8px; }
+.audiobtn {
+  font: inherit; font-size: 12px; color: var(--muted);
+  background: var(--chip-bg); border: 1px solid var(--line); border-radius: 3px;
+  padding: 2px 9px; cursor: pointer; transition: color .15s ease, border-color .15s ease;
+}
+.audiobtn:hover:not(:disabled) { color: var(--ink); border-color: var(--muted); }
+.audiobtn:disabled { cursor: default; opacity: .7; }
+.audioslot audio { height: 30px; max-width: 240px; }
+.audio-err { font-size: 12px; color: var(--kontra); }
+
 .endmark { text-align: center; color: var(--muted); font-size: 14px; margin: 30px 0 6px; padding: 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .endmark.gagal { color: var(--kontra); }
 

@@ -234,6 +234,114 @@ impl Client {
             })
             .unwrap_or_default())
     }
+
+    /// `POST /v1/audio/speech` → raw audio bytes (the router returns WAV).
+    ///
+    /// Read-aloud for one turn (aksesibilitas). `model_path` carries the voice as
+    /// its final segment (see [`crate::config::Tts::model_path`]); the body is the
+    /// minimal `{model, input}` the router accepts. Returns the audio verbatim —
+    /// this module stays stupid (§2): it does not cache, transcode, or know what a
+    /// "turn" is. Caching is the caller's job, on disk.
+    ///
+    /// Same key rule (§6) and same transport-retry taxonomy (§5) as [`kirim`];
+    /// content-level failures (a bad voice, an unknown model) fail fast as
+    /// `ModelDitolak` rather than retrying, for the same reason completions do.
+    ///
+    /// [`kirim`]: Client::kirim
+    pub async fn tts(&self, model_path: &str, input: &str) -> Result<Vec<u8>, LlmError> {
+        let body = serde_json::json!({ "model": model_path, "input": input });
+        let url = format!("{}/v1/audio/speech", self.base_url);
+
+        const MAX_PERCOBAAN: u32 = 3;
+        let mut percobaan = 0u32;
+
+        loop {
+            percobaan += 1;
+
+            let resp = self
+                .http
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.key.expose()))
+                // Mandatory (§5): the router's compression targets tool output,
+                // and there is no reason to risk it touching an audio stream.
+                .header("X-9Router-Token-Saver", "off")
+                .json(&body)
+                .send()
+                .await;
+
+            let resp = match resp {
+                Ok(r) => r,
+                Err(e) => {
+                    if percobaan >= MAX_PERCOBAAN {
+                        return Err(LlmError::Jaringan(e.to_string()));
+                    }
+                    tokio::time::sleep(backoff(percobaan)).await;
+                    continue;
+                }
+            };
+
+            let status = resp.status();
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok());
+
+            match status.as_u16() {
+                // Success is binary, not JSON — read bytes, not text.
+                200 => {
+                    let bytes = resp
+                        .bytes()
+                        .await
+                        .map_err(|e| LlmError::Jaringan(e.to_string()))?;
+                    if bytes.is_empty() {
+                        return Err(LlmError::Format("audio kosong dari router".into()));
+                    }
+                    return Ok(bytes.to_vec());
+                }
+
+                // Config problems, not transient ones (§5).
+                401 | 403 => return Err(LlmError::Auth(potong(&resp.text().await.unwrap_or_default()))),
+                400 | 404 | 422 => {
+                    return Err(LlmError::ModelDitolak {
+                        model: model_path.to_string(),
+                        detail: potong(&resp.text().await.unwrap_or_default()),
+                    });
+                }
+                402 => {
+                    return Err(LlmError::KreditHabis {
+                        model: model_path.to_string(),
+                        detail: potong(&resp.text().await.unwrap_or_default()),
+                    });
+                }
+
+                429 | 503 => {
+                    if percobaan >= MAX_PERCOBAAN {
+                        return Err(LlmError::TidakTersedia {
+                            status: status.as_u16(),
+                            detail: potong(&resp.text().await.unwrap_or_default()),
+                        });
+                    }
+                    let tunggu = retry_after
+                        .map(Duration::from_secs)
+                        .unwrap_or_else(|| backoff(percobaan));
+                    tokio::time::sleep(tunggu).await;
+                    continue;
+                }
+
+                _ => {
+                    if percobaan >= MAX_PERCOBAAN {
+                        return Err(LlmError::Http {
+                            status: status.as_u16(),
+                            detail: potong(&resp.text().await.unwrap_or_default()),
+                        });
+                    }
+                    tokio::time::sleep(backoff(percobaan)).await;
+                    continue;
+                }
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]

@@ -122,6 +122,63 @@ impl Models {
     }
 }
 
+/// Text-to-speech voices, one per side (Tahap 4, aksesibilitas).
+///
+/// TTS is an on-demand read-aloud of one turn at a time — never a broadcast and
+/// never a signal (§1: a synthesised voice's "confidence" has nothing to do with
+/// an argument's strength, so it must not be mistaken for one). It is therefore
+/// deliberately *not* in [`SessionConfig`]: it changes nothing about the debate,
+/// so a session file need not record it to be reproducible.
+///
+/// Voices differ per side so the ear can tell Pro from Kontra without the screen
+/// (mirrors the two columns, §7). §10 still applies: the two must be comparable
+/// in authority — one voice sounding weightier would bias exactly the way a
+/// stronger model does.
+///
+/// `serde(default)` throughout: a `config.toml` written before TTS existed still
+/// parses, and the whole `[tts]` section may be omitted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tts {
+    /// The TTS model path *without* the trailing voice segment, e.g.
+    /// `gemini/gemini-3.1-flash-tts-preview`. The router expects the voice
+    /// appended as a final path segment; [`Tts::model_path`] joins them.
+    pub model: String,
+    pub voice_pro: String,
+    pub voice_kontra: String,
+    /// Moderator and synthesizer — a third, neutral voice.
+    pub voice_lain: String,
+}
+
+impl Default for Tts {
+    fn default() -> Self {
+        Tts {
+            model: "gemini/gemini-3.1-flash-tts-preview".into(),
+            voice_pro: "Zephyr".into(),
+            voice_kontra: "Puck".into(),
+            voice_lain: "Charon".into(),
+        }
+    }
+}
+
+impl Tts {
+    /// The voice for a role: Pro and Kontra get their own; every non-debating
+    /// role shares the neutral one.
+    pub fn voice_for(&self, role: crate::view::Role) -> &str {
+        use crate::view::{Role, Side};
+        match role {
+            Role::Debater(Side::Pro) => &self.voice_pro,
+            Role::Debater(Side::Kontra) => &self.voice_kontra,
+            Role::Moderator | Role::Synthesizer => &self.voice_lain,
+        }
+    }
+
+    /// The full model id the router wants: model path with the voice as the
+    /// final segment, e.g. `gemini/gemini-3.1-flash-tts-preview/Zephyr`.
+    pub fn model_path(&self, voice: &str) -> String {
+        format!("{}/{}", self.model, voice)
+    }
+}
+
 /// The settings a session actually ran with, copied into its file (§3).
 ///
 /// Contains no key and no base URL — those are not per-session, and keeping
@@ -199,6 +256,10 @@ pub struct Config {
     pub similarity_threshold: f32,
     pub prompts_dir: PathBuf,
     pub sessions_dir: PathBuf,
+    /// Voices for read-aloud. Optional: a config without a `[tts]` section falls
+    /// back to sensible defaults, so this feature never breaks an old file.
+    #[serde(default)]
+    pub tts: Tts,
 }
 
 impl Config {

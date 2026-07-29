@@ -188,8 +188,33 @@ function card(t, cls) {
     chip = `<div class="chips"><span class="chip sepi">→ tidak menyerang klaim mana pun</span></div>`;
   }
 
-  return `<div class="turn ${cls}">${w}<div class="text">${esc(t.text)}</div>
+  return `<div class="turn ${cls}"><div class="turnhead">${audioBtn(t.index)}</div>
+    ${w}<div class="text">${esc(t.text)}</div>
     ${chip}<div class="foot">${t.word_count} kata${t.truncated?' · terpotong':''}</div></div>`;
+}
+
+// Read-aloud control (aksesibilitas). One button per turn, top corner. It is a
+// convenience for the ear, not a signal: nothing here plays on its own and there
+// is no summary voice — you press it for the turn you want (§1). Voices differ by
+// side server-side, so Pro and Kontra sound distinct without the screen (§7).
+function audioBtn(index) {
+  return `<span class="audioslot"><button class="audiobtn" onclick="dengarTurn(${index}, this)">🔊 dengar</button></span>`;
+}
+
+async function dengarTurn(index, btn) {
+  const slot = btn.parentElement;   // span.audioslot — its content is the button or, once ready, the player
+  btn.disabled = true;
+  btn.textContent = '⏳ menyiapkan…';
+  try {
+    // POST generates and caches on the server; a second press (or one after a
+    // refresh) is instant because the server returns the cached file.
+    const r = await fetch('/api/sesi/' + id + '/audio/' + index, { method: 'POST' });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || ('gagal ' + r.status)); }
+    slot.innerHTML = `<audio controls autoplay src="/api/sesi/${id}/audio/${index}"></audio>`;
+  } catch (e) {
+    slot.innerHTML = `<button class="audiobtn" onclick="dengarTurn(${index}, this)">🔊 coba lagi</button>` +
+      `<span class="audio-err">${esc(e.message)}</span>`;
+  }
 }
 
 // The synthesis panel (§1): shut until the debate is done, and never runs by
@@ -203,7 +228,8 @@ function renderPanel() {
   const sint = [...turns.values()].find(t => t.side === 'sintesis');
 
   if (sint) {
-    el.innerHTML = `<div class="sintesis">${mdMini(sint.text)}</div>`;
+    el.innerHTML = `<div class="turnhead">${audioBtn(sint.index)}</div>
+      <div class="sintesis">${mdMini(sint.text)}</div>`;
     return;
   }
   if (meta.status !== 'selesai') {

@@ -122,6 +122,14 @@ async fn main() -> anyhow::Result<()> {
         // done). This writes to a session, but only a `selesai` one — never a
         // running debate — so the "no writes to a running session" rule holds.
         .route("/api/sesi/{id}/sintesis", post(api_sintesis))
+        // Read-aloud (aksesibilitas). POST generates and caches one turn's audio;
+        // GET streams it back. On-demand only — no auto-play, no broadcast — so it
+        // does not turn the record into a broadcast (§1). Not a write to the
+        // *session*: the transcript is untouched; audio lives in a side cache.
+        .route(
+            "/api/sesi/{id}/audio/{index}",
+            get(api_audio_get).post(api_audio_post),
+        )
         .route("/api/riwayat", get(api_riwayat))
         .route("/api/setting", get(api_setting_get).post(api_setting_post))
         .route("/api/sehat", get(api_sehat))
@@ -327,6 +335,81 @@ async fn api_sintesis(State(st): State<Sd>, Path(id): Path<String>) -> Result<Re
         .get(idx)
         .ok_or_else(|| AppError::internal("turn sintesis hilang setelah dibuat"))?;
     Ok(Json(render::turn_web(idx, turn)).into_response())
+}
+
+// ─── read-aloud (TTS) ──────────────────────────────────────────────────────────
+
+/// Where one turn's cached audio lives. Under `sessions_dir` so it rides the same
+/// persistent volume as the sessions themselves, and `.dockerignore` already
+/// keeps `sesi/` out of the image. Keyed by turn index, which is stable: the
+/// transcript is append-only, so index 3 is always the same turn.
+fn audio_path(sessions_dir: &std::path::Path, id: &str, index: usize) -> PathBuf {
+    sessions_dir.join("audio").join(id).join(format!("{index}.wav"))
+}
+
+/// `POST /api/sesi/{id}/audio/{index}` — generate (and cache) one turn's audio.
+///
+/// Idempotent: if the cache already holds it, this returns without calling the
+/// router, so a second click — or a click after a refresh — is instant and free.
+/// The voice is chosen by the turn's role (§7: Pro and Kontra differ so the ear
+/// can tell them apart). Markdown is stripped first so the reader does not
+/// pronounce `**` and `##`.
+async fn api_audio_post(
+    State(st): State<Sd>,
+    Path((id, index)): Path<(String, usize)>,
+) -> Result<Response, AppError> {
+    let cache = audio_path(&st.sessions_dir, &id, index);
+    if tokio::fs::try_exists(&cache).await.unwrap_or(false) {
+        return Ok(Json(serde_json::json!({ "ok": true, "cached": true })).into_response());
+    }
+
+    let path = st.sessions_dir.join(format!("{id}.json"));
+    let s = muat(&path).await.map_err(|_| AppError::not_found())?;
+    let turn = s
+        .transcript
+        .get(index)
+        .ok_or_else(|| AppError::bad("nomor turn tidak ada"))?;
+
+    let voice = st.base.tts.voice_for(turn.role);
+    let model_path = st.base.tts.model_path(voice);
+    let bersih = teks_untuk_suara(&turn.text);
+    if bersih.trim().is_empty() {
+        return Err(AppError::bad("turn tanpa teks untuk dibacakan"));
+    }
+
+    let audio = st
+        .client
+        .tts(&model_path, &bersih)
+        .await
+        .map_err(|e| AppError(StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    if let Some(dir) = cache.parent() {
+        tokio::fs::create_dir_all(dir).await.map_err(AppError::internal)?;
+    }
+    tokio::fs::write(&cache, &audio).await.map_err(AppError::internal)?;
+
+    Ok(Json(serde_json::json!({ "ok": true, "cached": false })).into_response())
+}
+
+/// `GET /api/sesi/{id}/audio/{index}` — stream cached audio, or 404 if it has not
+/// been generated yet. The browser only reaches here after a successful POST, so
+/// a 404 means "generate first", not an error.
+async fn api_audio_get(
+    State(st): State<Sd>,
+    Path((id, index)): Path<(String, usize)>,
+) -> Result<Response, AppError> {
+    let cache = audio_path(&st.sessions_dir, &id, index);
+    let bytes = tokio::fs::read(&cache)
+        .await
+        .map_err(|_| AppError::not_found())?;
+    Ok(([(header::CONTENT_TYPE, "audio/wav")], bytes).into_response())
+}
+
+/// Strip the little markdown the debaters emit (`**bold**`, `*italic*`, `##`,
+/// backticks) so the reader speaks words, not punctuation. Deliberately minimal —
+/// it matches what the turn text actually contains, nothing more.
+fn teks_untuk_suara(s: &str) -> String {
+    s.chars().filter(|&c| c != '*' && c != '#' && c != '`' && c != '_').collect()
 }
 
 // ─── reads ───────────────────────────────────────────────────────────────────

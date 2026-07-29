@@ -30,3 +30,14 @@ synthesizer = "cc/claude-opus-4-7"
 # "check this yourself", nothing more. Opus for the same reason synthesizer is
 # on it: fact-check catatan lands in front of the user, so quality matters.
 fact_checker = "cc/claude-opus-4-7"
+
+[tts]
+# Read-aloud voices (aksesibilitas). On-demand per turn, never a broadcast and
+# never a signal (§1). Different voices per side so the ear tells Pro from Kontra
+# without the screen (§7); they must be comparable in authority (§10), not one
+# weightier. Model path is the router's TTS model *without* the voice; the voice
+# is appended as the final segment (e.g. .../Zephyr). Router returns WAV.
+model = "gemini/gemini-3.1-flash-tts-preview"
+voice_pro = "Zephyr"
+voice_kontra = "Puck"
+voice_lain = "Charon"
