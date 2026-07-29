@@ -29,9 +29,11 @@ COPY --from=build /web /app/web
 COPY prompts /app/prompts
 COPY config.toml /app/config.toml
 
-# Session files persist across restarts. Mount a Coolify volume at /app/sesi.
+# Session files persist across restarts via a Coolify persistent volume mounted
+# at /app/sesi (configure under the app's Storages). We deliberately do NOT use a
+# `VOLUME` instruction here: with no named volume it silently creates a fresh
+# anonymous volume on every redeploy, so old sessions get orphaned and lost.
 RUN mkdir -p /app/sesi
-VOLUME /app/sesi
 
 # Bind to all interfaces INSIDE the container. This is only safe because the
 # container is on Coolify's private network; the public path is Traefik →
