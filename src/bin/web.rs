@@ -52,6 +52,17 @@ enum LiveStatus {
     Gagal,
 }
 
+/// State of one turn's read-aloud generation, keyed `(id, index)` in
+/// `AppState::audio_jobs`. A finished job leaves no entry: the cached WAV on disk
+/// is the record of success (§7 file-is-truth), so this enum only carries the two
+/// states a file cannot represent — still running, or failed with a reason. TTS
+/// is generated off the request thread (see `api_audio_post`) precisely so no
+/// single HTTP request outlives Cloudflare's ~100s edge timeout and returns 524.
+enum AudioJob {
+    Menyiapkan,
+    Gagal(String),
+}
+
 /// What crosses the broadcast channel and, mapped, the SSE wire.
 #[derive(Clone)]
 enum Ev {
@@ -75,6 +86,12 @@ struct AppState {
     /// and so cannot be changed from the web at all.
     defaults: Mutex<SessionConfig>,
     live: Mutex<HashMap<String, Arc<Live>>>,
+    /// In-flight (or failed) read-aloud generations, keyed `(id, index)`. A
+    /// successful job removes its entry — the cached WAV is the record — so this
+    /// map only holds `Menyiapkan`/`Gagal`. It exists so `api_audio_post` can
+    /// return immediately and hand the slow router call to a background task,
+    /// keeping every HTTP request under Cloudflare's edge timeout (§ no 524).
+    audio_jobs: Mutex<HashMap<(String, usize), AudioJob>>,
     /// Lazy cache of `GET /v1/models`. Router's catalogue is stable within a
     /// process lifetime; a `?refresh=1` query clears it if the user adds a new
     /// model on the router side without restarting the server.
@@ -96,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
         sessions_dir: base.sessions_dir.clone(),
         defaults: Mutex::new(defaults),
         live: Mutex::new(HashMap::new()),
+        audio_jobs: Mutex::new(HashMap::new()),
         models_cache: Mutex::new(None),
         prompts,
         client,
@@ -129,6 +147,12 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/sesi/{id}/audio/{index}",
             get(api_audio_get).post(api_audio_post),
+        )
+        // Poll target: the POST above returns before the router call finishes, so
+        // the browser watches this until the WAV is cached (or the job fails).
+        .route(
+            "/api/sesi/{id}/audio/{index}/status",
+            get(api_audio_status),
         )
         .route("/api/riwayat", get(api_riwayat))
         .route("/api/setting", get(api_setting_get).post(api_setting_post))
@@ -347,22 +371,31 @@ fn audio_path(sessions_dir: &std::path::Path, id: &str, index: usize) -> PathBuf
     sessions_dir.join("audio").join(id).join(format!("{index}.wav"))
 }
 
-/// `POST /api/sesi/{id}/audio/{index}` — generate (and cache) one turn's audio.
+/// `POST /api/sesi/{id}/audio/{index}` — start generating one turn's audio, and
+/// return **immediately**.
 ///
-/// Idempotent: if the cache already holds it, this returns without calling the
-/// router, so a second click — or a click after a refresh — is instant and free.
-/// The voice is chosen by the turn's role (§7: Pro and Kontra differ so the ear
-/// can tell them apart). Markdown is stripped first so the reader does not
-/// pronounce `**` and `##`.
+/// The router's TTS call can take longer than Cloudflare's ~100s edge timeout for
+/// a long turn, and a request that blocks on it gets killed mid-flight with a 524.
+/// So this never awaits the router: it validates fast, marks the job `Menyiapkan`,
+/// spawns a background task to do the slow call, and replies at once. The browser
+/// then polls `GET .../audio/{index}/status` (see `api_audio_status`) until the
+/// WAV is cached. This mirrors how a debate runs off-thread in `api_mulai`.
+///
+/// Idempotent: a cached file short-circuits to `siap`, and an in-flight job is not
+/// re-spawned, so a second click — or a click after a refresh — is cheap. A click
+/// on a previously `Gagal` turn clears it and retries. The voice is chosen by the
+/// turn's role (§7); markdown is stripped so the reader does not pronounce `**`.
 async fn api_audio_post(
     State(st): State<Sd>,
     Path((id, index)): Path<(String, usize)>,
 ) -> Result<Response, AppError> {
     let cache = audio_path(&st.sessions_dir, &id, index);
     if tokio::fs::try_exists(&cache).await.unwrap_or(false) {
-        return Ok(Json(serde_json::json!({ "ok": true, "cached": true })).into_response());
+        return Ok(Json(serde_json::json!({ "status": "siap" })).into_response());
     }
 
+    // Validate the turn *before* spawning, so a bad index or an empty turn fails
+    // fast as a 400 the user sees, instead of surfacing later as a job failure.
     let path = st.sessions_dir.join(format!("{id}.json"));
     let s = muat(&path).await.map_err(|_| AppError::not_found())?;
     let turn = s
@@ -377,22 +410,80 @@ async fn api_audio_post(
         return Err(AppError::bad("turn tanpa teks untuk dibacakan"));
     }
 
-    let audio = st
-        .client
-        .tts(&model_path, &bersih)
-        .await
-        .map_err(|e| AppError(StatusCode::BAD_GATEWAY, e.to_string()))?;
-
-    if let Some(dir) = cache.parent() {
-        tokio::fs::create_dir_all(dir).await.map_err(AppError::internal)?;
+    // Claim the job under the lock. If one is already in flight, don't spawn a
+    // second — just report that it is being prepared. A prior failure is cleared
+    // here, so clicking "coba lagi" retries.
+    {
+        let mut jobs = st.audio_jobs.lock().unwrap();
+        if matches!(jobs.get(&(id.clone(), index)), Some(AudioJob::Menyiapkan)) {
+            return Ok(Json(serde_json::json!({ "status": "menyiapkan" })).into_response());
+        }
+        jobs.insert((id.clone(), index), AudioJob::Menyiapkan);
     }
-    tokio::fs::write(&cache, &audio).await.map_err(AppError::internal)?;
 
-    Ok(Json(serde_json::json!({ "ok": true, "cached": false })).into_response())
+    // The slow router call and the disk write happen here, off the request
+    // thread. On success the entry is removed (the cached file is the record); on
+    // failure it is replaced with `Gagal` so the poller can report the reason.
+    let st2 = st.clone();
+    tokio::spawn(async move {
+        let hasil = async {
+            let audio = st2
+                .client
+                .tts(&model_path, &bersih)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(dir) = cache.parent() {
+                tokio::fs::create_dir_all(dir)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            tokio::fs::write(&cache, &audio)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok::<(), String>(())
+        }
+        .await;
+
+        let mut jobs = st2.audio_jobs.lock().unwrap();
+        match hasil {
+            Ok(()) => {
+                jobs.remove(&(id, index));
+            }
+            Err(pesan) => {
+                eprintln!("tts sesi {id} turn {index} gagal: {pesan}");
+                jobs.insert((id, index), AudioJob::Gagal(pesan));
+            }
+        }
+    });
+
+    Ok(Json(serde_json::json!({ "status": "menyiapkan" })).into_response())
+}
+
+/// `GET /api/sesi/{id}/audio/{index}/status` — where a background generation is.
+///
+/// Read-only: it never starts a job, it only reports one. The cached file wins
+/// over the job map, so a job that finished between poll ticks reads as `siap`
+/// even though its entry is already gone. `belum` means neither a file nor a job
+/// exists — e.g. after a restart wiped the in-memory map — and the browser should
+/// re-POST to start over.
+async fn api_audio_status(
+    State(st): State<Sd>,
+    Path((id, index)): Path<(String, usize)>,
+) -> Result<Response, AppError> {
+    let cache = audio_path(&st.sessions_dir, &id, index);
+    if tokio::fs::try_exists(&cache).await.unwrap_or(false) {
+        return Ok(Json(serde_json::json!({ "status": "siap" })).into_response());
+    }
+    let body = match st.audio_jobs.lock().unwrap().get(&(id, index)) {
+        Some(AudioJob::Menyiapkan) => serde_json::json!({ "status": "menyiapkan" }),
+        Some(AudioJob::Gagal(m)) => serde_json::json!({ "status": "gagal", "error": m }),
+        None => serde_json::json!({ "status": "belum" }),
+    };
+    Ok(Json(body).into_response())
 }
 
 /// `GET /api/sesi/{id}/audio/{index}` — stream cached audio, or 404 if it has not
-/// been generated yet. The browser only reaches here after a successful POST, so
+/// been generated yet. The browser only reaches here after a status of `siap`, so
 /// a 404 means "generate first", not an error.
 async fn api_audio_get(
     State(st): State<Sd>,

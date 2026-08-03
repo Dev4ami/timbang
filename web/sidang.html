@@ -253,17 +253,39 @@ async function dengarTurn(index) {
   audioState.set(index, 'menyiapkan');
   render();   // reflect the ⏳ state; other turns keep playing untouched
   try {
-    // POST generates and caches on the server; a second press (or one after a
-    // refresh) is instant because the server returns the cached file.
+    // POST returns immediately: the server generates in the background so no
+    // single request outlives Cloudflare's edge timeout (that was the 524). A
+    // cached turn comes back 'siap' at once; otherwise we poll for it.
     const r = await fetch('/api/sesi/' + id + '/audio/' + index, { method: 'POST' });
     if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || ('gagal ' + r.status)); }
-    audioState.set(index, 'siap');
-    mainkan(index);   // this both swaps the player source and re-renders buttons
+    const j = await r.json().catch(() => ({}));
+    if (j.status === 'siap') { audioState.set(index, 'siap'); mainkan(index); }
+    else pollAudio(index);   // 'menyiapkan' — watch until the WAV is ready
   } catch (e) {
     audioState.set(index, 'gagal');
     lastAudioErr = e.message;
     render();
   }
+}
+
+// Watch one turn's background generation until it is ready or fails. Per-index
+// and independent, so several turns can generate at once (the persistent player
+// keeps one playing while others prepare). `audioState` is the source of truth:
+// if the user closed or switched away, the guard below stops the loop quietly.
+async function pollAudio(index) {
+  if (audioState.get(index) !== 'menyiapkan') return;   // user moved on
+  try {
+    const r = await fetch('/api/sesi/' + id + '/audio/' + index + '/status');
+    const j = await r.json().catch(() => ({}));
+    if (j.status === 'siap') { audioState.set(index, 'siap'); mainkan(index); return; }
+    if (j.status === 'gagal') { audioState.set(index, 'gagal'); lastAudioErr = j.error || 'gagal'; render(); return; }
+    // 'belum' means the server has no job (e.g. it restarted) — kick off a fresh
+    // generation, then keep polling. 'menyiapkan' just waits.
+    if (j.status === 'belum') { await fetch('/api/sesi/' + id + '/audio/' + index, { method: 'POST' }); }
+  } catch (e) {
+    // A transient poll failure should not kill playback — try again next tick.
+  }
+  setTimeout(() => pollAudio(index), 1500);
 }
 
 // Point the one persistent player at a turn and play it from the start. Called
