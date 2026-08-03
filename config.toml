@@ -1,6 +1,13 @@
 # Timbang. Committed — the API key is not here, it lives in .env (§6).
 
-base_url = "https://9router.dev4ami.my.id"
+# LAN-langsung ke 9router di host yang sama, melewati tunnel Cloudflare.
+# Alasan: TTS turn panjang butuh ~125s; Cloudflare depan 9router memutus di
+# ~100s = 524/502. Lewat LAN batasnya jadi timeout klien Rust (300s), dan turn
+# yang sama malah selesai ~54s tanpa overhead tunnel. Dipakai untuk SEMUA
+# request (debat + TTS): §5 menyebut tunnel sebagai titik gagal tunggal.
+# Bukan pelanggaran §6 — yang dilarang adalah web UI mengubah base_url, bukan
+# file config yang di-commit. Server tetap bind loopback/guarded (lihat `bind`).
+base_url = "http://192.168.0.100:20128"
 # Loopback only. Binding wider would expose the server that holds the key (§6).
 bind = "127.0.0.1:7878"
 
