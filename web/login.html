@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Masuk — Timbang</title>
+<script>document.documentElement.dataset.theme=localStorage.getItem('tema')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')</script>
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js" defer></script>
+<style>
+  /* Login stands alone — no nav, no columns. A single card on the same paper as
+     the rest, so it reads as the front door of the same document, not a new app. */
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+  .kartu {
+    width: 100%; max-width: 380px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 4px; padding: 32px 28px;
+  }
+  .kartu h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: .04em; }
+  .kartu p.sub { margin: 0 0 22px; color: var(--muted); font-size: 14px; }
+  input[type=password] {
+    width: 100%; background: var(--paper); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 3px;
+    padding: 11px 12px; font: inherit; font-size: 15px;
+  }
+  input[type=password]:focus { outline: none; border-color: var(--pro); }
+  .kartu button { width: 100%; margin-top: 16px; }
+</style>
+</head>
+<body>
+<form class="kartu" method="post" action="/login">
+  <h1>TIMBANG</h1>
+  <p class="sub">Alat debat antar-AI. Masukkan password untuk masuk.</p>
+  <div class="err" id="err" hidden>Password salah, coba lagi.</div>
+  <label for="password">Password</label>
+  <input type="password" name="password" id="password" autocomplete="current-password" required autofocus>
+  <button type="submit">Masuk</button>
+</form>
+<script>
+  // The POST bounces back here with ?err=1 on a wrong password (no JS state to
+  // carry, so the flag rides the URL). Reveal the message, nothing more.
+  if (new URLSearchParams(location.search).has('err')) {
+    document.getElementById('err').hidden = false;
+  }
+</script>
+</body>
+</html>

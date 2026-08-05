@@ -260,6 +260,14 @@ pub struct Config {
     /// back to sensible defaults, so this feature never breaks an old file.
     #[serde(default)]
     pub tts: Tts,
+    /// The dashboard's single-password gate (§6). `None` = open access (dev on
+    /// loopback); `Some` = login required. Read from `TIMBANG_PASSWORD` at
+    /// runtime, never from the file — `skip` keeps it out of any toml round-trip
+    /// and out of the file entirely. It is deliberately *not* [`ApiKey`]: it is
+    /// weaker (never sent to a model), but must still never reach a struct that
+    /// serialises to the browser, so it lives only here, never in `SessionConfig`.
+    #[serde(skip)]
+    pub dashboard_password: Option<String>,
 }
 
 impl Config {
@@ -277,6 +285,13 @@ impl Config {
                 cfg.bind = v.trim().to_string();
             }
         }
+        // The password gate (§6), read like TIMBANG_BIND — from the env, never the
+        // file. Empty or whitespace collapses to `None` = open access, so a blank
+        // `TIMBANG_PASSWORD=` in .env reads the same as no variable at all.
+        cfg.dashboard_password = std::env::var("TIMBANG_PASSWORD")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         cfg.periksa()?;
         Ok(cfg)
     }
@@ -308,9 +323,17 @@ impl Config {
         if !loopback && !public_bind_allowed {
             return Err(ConfigError::BindNonLoopback);
         }
+        // A public bind with no password is an open door to the router's credit
+        // (§6): fail-fast, not a warning. The upstream auth exception above covers
+        // Cloudflare Access, but this app-level gate is the default expectation —
+        // if you open the port, you set TIMBANG_PASSWORD. `dashboard_password` is
+        // already normalised (a blank env var reads as `None`).
+        if !loopback && self.dashboard_password.is_none() {
+            return Err(ConfigError::BindPublikTanpaAuth);
+        }
         if !loopback {
             eprintln!(
-                "\n⚠ Timbang bind ke {} (bukan loopback).\n  Ini boleh HANYA kalau ada auth di depan\n  (mis. Cloudflare Access). Tanpa itu, siapa pun di jaringan\n  bisa habiskan credit router lewat aplikasi ini.\n",
+                "\n⚠ Timbang bind ke {} (bukan loopback).\n  Auth gembok-password aktif. Pastikan juga ada auth di depan\n  (mis. Cloudflare Access) kalau port ini terekspos ke internet.\n",
                 self.bind
             );
         }
@@ -428,6 +451,11 @@ pub enum ConfigError {
          Set env var itu HANYA kalau ada auth di depan (Cloudflare Access, dst)."
     )]
     BindNonLoopback,
+    #[error(
+        "bind bukan loopback tapi TIMBANG_PASSWORD kosong. Membuka app ke jaringan \
+         tanpa gembok berarti siapa pun bisa habiskan credit router. Set TIMBANG_PASSWORD."
+    )]
+    BindPublikTanpaAuth,
     #[error("Pro dan Kontra memakai model yang sama ({0}). Debat butuh dua model berbeda.")]
     DebaterSama(String),
     #[error(

@@ -203,7 +203,7 @@ memulai ulang.
 ## 6. Konfigurasi & keamanan
 
 ```
-.env             ROUTER_API_KEY                          ← .gitignore
+.env             ROUTER_API_KEY, TIMBANG_PASSWORD         ← .gitignore
 .env.example     nama variabel tanpa nilai               ← ikut commit
 config.toml      base_url, model per role, ronde, path   ← ikut commit
 prompts/         pro.md, kontra.md, moderator.md, synthesizer.md
@@ -222,16 +222,40 @@ sesi/            {id}.json — checkpoint per fase
   + Cloudflare Access), bind `0.0.0.0` di dalam container boleh. Guard-nya
   eksplisit di kode: `TIMBANG_ALLOW_PUBLIC_BIND=1` **dan** `TIMBANG_BIND` env
   wajib, warning startup wajib muncul. `cargo run` biasa di laptop tetap kena
-  rem — env var absent → validasi tolak. Auth **di luar app**, bukan di
-  dalamnya, karena `CLAUDE.md` memaksa app tetap "satu pengguna" dan menambah
-  auth di sini justru pintu masuk ke fitur multi-user yang §1 tolak.
+  rem — env var absent → validasi tolak.
 - Browser tidak boleh pernah tahu soal key. Alur: browser → server Rust → 9router → model.
+
+### Auth: gembok satu-password, di dalam app
+
+Sebelumnya file ini memaksa auth **di luar** app (Cloudflare Access). Aturan itu
+dilonggarkan: auth boleh **di dalam** app, tapi hanya dalam bentuk **satu password**
+— bukan akun per-user. Satu password (satu pengguna, §1) tidak melanggar prinsip
+"satu pengguna"; yang tetap dilarang adalah tabel user, akun ganda, dan hak akses
+berbeda. Cloudflare Access tetap opsi sah sebagai lapisan tambahan di depan.
+
+- Password dibaca dari env `TIMBANG_PASSWORD`. **Kosong = akses terbuka** (dev di
+  loopback, perilaku lama utuh). **Diisi = wajib login** lewat `/login`.
+- Session cookie disimpan in-memory. Hilang saat restart — itu OK, tinggal login
+  lagi. Tak ada penyimpanan session di disk, tak ada tabel user.
+- Password diverifikasi **constant-time** (hindari timing leak). Bukan `ApiKey`
+  newtype — dia tak sekuat key (tak dikirim ke model), tapi tetap **tidak boleh**
+  ikut ke struct apa pun yang di-serialize ke browser.
+- **Bind non-loopback + `TIMBANG_PASSWORD` kosong = fail-fast**, bukan sekadar
+  warning. Membuka app ke jaringan tanpa gembok berarti siapa pun bisa menghabiskan
+  credit router lewat app ini, jadi validasi menolak start. Bind publik butuh
+  `TIMBANG_ALLOW_PUBLIC_BIND=1` **dan** `TIMBANG_BIND` **dan** `TIMBANG_PASSWORD`.
+- **Password gate ≠ akses dari luar.** Gembok mengamankan *setelah* jalur terbuka;
+  menjangkau mesin dari internet tetap butuh tembus NAT terpisah (Cloudflare Tunnel
+  atau Tailscale), di luar scope kode.
+- Tetap tak ada kolom login di halaman sesi (§1): form login terpisah, sebelum masuk.
 
 ### Yang boleh diubah dari web vs tidak
 
 | Boleh | Tidak boleh |
 |---|---|
-| model per role, jumlah ronde, batas kata, temperature | API key, base URL router, alamat bind |
+| model per role, jumlah ronde, batas kata, temperature | API key, base URL router, alamat bind, password login |
+
+Password login sejajar API key: hanya dari env, tak pernah dari web.
 
 Base URL masuk daftar terlarang: kalau halaman web bisa mengubahnya, satu kesalahan bisa
 mengarahkan request beserta API key ke server orang lain.

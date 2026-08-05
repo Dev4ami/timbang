@@ -12,12 +12,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::{
-    Json, Router,
-    extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{Html, IntoResponse, Response, Sse, sse},
+    Form, Json, Router,
+    extract::{Path, Query, Request, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware::{self, Next},
+    response::{Html, IntoResponse, Redirect, Response, Sse, sse},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -96,9 +98,18 @@ struct AppState {
     /// process lifetime; a `?refresh=1` query clears it if the user adds a new
     /// model on the router side without restarting the server.
     models_cache: Mutex<Option<Vec<(String, String)>>>,
+    /// Live login sessions for the password gate (§6). In-memory only: lost on
+    /// restart (fine — log in again), never on disk, never a user table. Empty
+    /// and unused when `base.dashboard_password` is `None` (open access).
+    sessions: Sessions,
 }
 
 type Sd = Arc<AppState>;
+
+/// Login cookie lifetime, refreshed on every valid request so an active user is
+/// never logged out mid-session. Seven days: long enough that the phone re-login
+/// is rare, short enough that a stale cookie on a shared machine expires.
+const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -108,6 +119,10 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new(&base.base_url, ApiKey::from_env()?)?;
     let defaults = base.untuk_sesi();
     let bind = base.bind.clone();
+    // The gate is on iff a password was set (§6). Decided here, once, so the
+    // router either carries the middleware or does not — there is no per-request
+    // "is auth enabled" branch to get wrong.
+    let auth_aktif = base.dashboard_password.is_some();
 
     let state = Arc::new(AppState {
         sessions_dir: base.sessions_dir.clone(),
@@ -115,20 +130,21 @@ async fn main() -> anyhow::Result<()> {
         live: Mutex::new(HashMap::new()),
         audio_jobs: Mutex::new(HashMap::new()),
         models_cache: Mutex::new(None),
+        sessions: Sessions::new(SESSION_TTL),
         prompts,
         client,
         base,
     });
 
-    let app = Router::new()
+    // Everything that needs the gate. `/login`, `/logout`, and the static theme
+    // assets are added *after* the layer so they stay reachable while logged out.
+    let mut protected = Router::new()
         .route("/", get(halaman_baru))
         .route("/sesi/{id}", get(halaman_sidang))
         .route("/sesi/{id}/framing", get(halaman_framing))
         .route("/sesi/{id}/stream", get(stream))
         .route("/riwayat", get(halaman_riwayat))
         .route("/setting", get(halaman_setting))
-        .route("/style.css", get(gaya))
-        .route("/theme.js", get(tema_js))
         // API. Note what is NOT here: no POST/PUT/PATCH to /api/sesi/{id} once a
         // debate is running. The only write to a session is the framing approval
         // below, which happens before the debate starts (§1: no input on the
@@ -157,7 +173,22 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/riwayat", get(api_riwayat))
         .route("/api/setting", get(api_setting_get).post(api_setting_post))
         .route("/api/sehat", get(api_sehat))
-        .route("/api/models", get(api_models))
+        .route("/api/models", get(api_models));
+
+    if auth_aktif {
+        protected = protected.layer(middleware::from_fn_with_state(state.clone(), require));
+        println!("Timbang: gembok password aktif (TIMBANG_PASSWORD terpasang).");
+    } else {
+        println!("Timbang: TANPA gembok — akses terbuka (loopback). Set TIMBANG_PASSWORD kalau perlu.");
+    }
+
+    let app = protected
+        // Public: the login form, logout, and static theme assets (no secrets).
+        // Logout clearing a cookie while logged out is a harmless no-op.
+        .route("/login", get(login_page).post(login_submit))
+        .route("/logout", post(logout))
+        .route("/style.css", get(gaya))
+        .route("/theme.js", get(tema_js))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -791,6 +822,162 @@ fn terapkan_patch(base: &SessionConfig, p: Option<&WebSettingsPatch>) -> Session
         }
     }
     c
+}
+
+// ─── auth ────────────────────────────────────────────────────────────────────
+//
+// A single-password gate (§6), not a user system: one password from
+// `TIMBANG_PASSWORD`, one in-memory session store, no table and no accounts. The
+// gate is a middleware the router only carries when a password is set; the store
+// lives on `AppState` but stays empty and untouched when access is open. Adapted
+// from the neighbouring `ngapain` project, trimmed to password-only.
+
+const COOKIE_NAME: &str = "session";
+
+/// In-memory login sessions: token → expiry. A restart drops them all — that is
+/// fine (§6: log in again), and it means there is nothing on disk to leak and no
+/// user table to grow into the multi-user system §1 forbids.
+struct Sessions {
+    inner: Mutex<HashMap<String, Instant>>,
+    ttl: Duration,
+}
+
+impl Sessions {
+    fn new(ttl: Duration) -> Self {
+        Sessions { inner: Mutex::new(HashMap::new()), ttl }
+    }
+
+    /// Mint a random token (reusing the crate's `uuid` — no new dependency) and
+    /// record its expiry. The token is opaque; it maps to nothing but "logged in".
+    fn create(&self) -> String {
+        let token = uuid::Uuid::new_v4().to_string();
+        let expiry = Instant::now() + self.ttl;
+        self.inner.lock().unwrap().insert(token.clone(), expiry);
+        token
+    }
+
+    /// Valid iff present and unexpired. A valid check refreshes the expiry so an
+    /// active user is not logged out when the original TTL elapses; an expired one
+    /// is swept as it is read.
+    fn is_valid(&self, token: &str) -> bool {
+        let mut store = self.inner.lock().unwrap();
+        let now = Instant::now();
+        match store.get(token).copied() {
+            Some(expiry) if expiry > now => {
+                store.insert(token.into(), now + self.ttl);
+                true
+            }
+            Some(_) => {
+                store.remove(token);
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn remove(&self, token: &str) {
+        self.inner.lock().unwrap().remove(token);
+    }
+}
+
+/// Gate middleware: a valid session cookie passes; otherwise an `/api/*` call
+/// gets 401 JSON (so the browser's fetch sees an error, not an HTML redirect it
+/// cannot follow), and a page navigation is redirected to `/login`. Only attached
+/// when a password is set, so reaching here means the gate is on.
+async fn require(State(st): State<Sd>, req: Request, next: Next) -> Response {
+    if let Some(token) = cookie_value(&req, COOKIE_NAME) {
+        if st.sessions.is_valid(&token) {
+            return next.run(req).await;
+        }
+    }
+    if req.uri().path().starts_with("/api/") {
+        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "butuh login" }))).into_response()
+    } else {
+        Redirect::to("/login").into_response()
+    }
+}
+
+/// `GET /login` — the form. If the gate is off (`dashboard_password` is `None`)
+/// the page is pointless, so bounce to the home page; likewise if already logged
+/// in, so a valid cookie never sees a login form.
+async fn login_page(State(st): State<Sd>, req: Request) -> Response {
+    if st.base.dashboard_password.is_none() {
+        return Redirect::to("/").into_response();
+    }
+    if let Some(token) = cookie_value(&req, COOKIE_NAME) {
+        if st.sessions.is_valid(&token) {
+            return Redirect::to("/").into_response();
+        }
+    }
+    Html(include_str!("../../web/login.html")).into_response()
+}
+
+#[derive(Deserialize)]
+struct LoginForm {
+    password: String,
+}
+
+/// `POST /login` — verify the password constant-time, mint a session, set the
+/// cookie. A wrong password bounces back to the form with `?err=1`; the gate
+/// being off makes this a no-op redirect home.
+async fn login_submit(State(st): State<Sd>, Form(form): Form<LoginForm>) -> Response {
+    let Some(expected) = st.base.dashboard_password.as_deref() else {
+        return Redirect::to("/").into_response();
+    };
+    if !constant_eq(form.password.as_bytes(), expected.as_bytes()) {
+        return Redirect::to("/login?err=1").into_response();
+    }
+    let token = st.sessions.create();
+    let ttl = st.sessions.ttl.as_secs();
+    // HttpOnly: JS cannot read it, so an XSS cannot lift the session. SameSite=Lax:
+    // sent on top-level navigations (the login redirect works) but not on
+    // cross-site subrequests. No `Secure` flag — behind a tunnel the browser sees
+    // plain HTTP to loopback; the TLS terminates upstream.
+    let cookie = format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={ttl}");
+    (
+        [(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap())],
+        Redirect::to("/"),
+    )
+        .into_response()
+}
+
+/// `POST /logout` — drop the server-side session and clear the cookie. Safe to
+/// call while logged out (nothing to remove, the clear is idempotent).
+async fn logout(State(st): State<Sd>, req: Request) -> Response {
+    if let Some(token) = cookie_value(&req, COOKIE_NAME) {
+        st.sessions.remove(&token);
+    }
+    let cookie = format!("{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    (
+        [(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap())],
+        Redirect::to("/login"),
+    )
+        .into_response()
+}
+
+/// Pull one cookie's value out of the `Cookie: a=1; b=2` header.
+fn cookie_value(req: &Request, name: &str) -> Option<String> {
+    req.headers()
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.to_string())
+}
+
+/// Byte-compare without short-circuiting, so response time does not leak how many
+/// leading bytes of the password were correct.
+fn constant_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut acc: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        acc |= x ^ y;
+    }
+    acc == 0
 }
 
 // ─── errors ──────────────────────────────────────────────────────────────────
