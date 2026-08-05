@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Timbang">
+  <!-- App tile split diagonally: Pro (biru) upper-left, Kontra (merah) lower-right,
+       a clean white seam between. Flat, two-tone, no gradient — the balance is the
+       idea (§1: two sides, no winner). Colours are the --pro / --kontra tokens. -->
+  <defs>
+    <clipPath id="r"><rect width="100" height="100" rx="24"/></clipPath>
+  </defs>
+  <g clip-path="url(#r)">
+    <rect width="100" height="100" fill="#1d4e6f"/>
+    <polygon points="100,0 100,100 0,100" fill="#7a2e2e"/>
+    <line x1="0" y1="100" x2="100" y2="0" stroke="#fff" stroke-width="7"/>
+  </g>
+</svg>

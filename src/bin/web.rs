@@ -189,6 +189,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/logout", post(logout))
         .route("/style.css", get(gaya))
         .route("/theme.js", get(tema_js))
+        // Brand + PWA assets, public so the login page and home-screen install can
+        // fetch them while logged out.
+        .route("/favicon.svg", get(favicon_svg))
+        .route("/favicon.ico", get(favicon_png))
+        .route("/manifest.webmanifest", get(manifest))
+        .route("/icon-180.png", get(ikon_180))
+        .route("/icon-192.png", get(ikon_192))
+        .route("/icon-512.png", get(ikon_512))
+        .route("/icon-maskable-512.png", get(ikon_maskable))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -219,6 +228,34 @@ async fn gaya() -> impl IntoResponse {
 }
 async fn tema_js() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], include_str!("../../web/theme.js"))
+}
+
+// ─── brand assets ──────────────────────────────────────────────────────────
+//
+// The logo is an app tile split diagonally, Pro (biru) against Kontra (merah)
+// (§1: two sides, no winner). The SVG serves the browser tab; the PNGs exist only
+// because iOS/Android home-screen icons must be raster. All embedded with
+// include_bytes! so the binary stays self-contained (§2), and all public so the
+// login page and the PWA install can reach them while logged out. A week of
+// cache: the art changes about never.
+const CACHE_SEMINGGU: &str = "public, max-age=604800";
+
+async fn favicon_svg() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/svg+xml"), (header::CACHE_CONTROL, CACHE_SEMINGGU)],
+     include_str!("../../web/favicon.svg"))
+}
+async fn manifest() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/manifest+json"), (header::CACHE_CONTROL, CACHE_SEMINGGU)],
+     include_str!("../../web/manifest.webmanifest"))
+}
+async fn ikon_180() -> impl IntoResponse { png(include_bytes!("../../web/icon-180.png")) }
+async fn ikon_192() -> impl IntoResponse { png(include_bytes!("../../web/icon-192.png")) }
+async fn ikon_512() -> impl IntoResponse { png(include_bytes!("../../web/icon-512.png")) }
+async fn ikon_maskable() -> impl IntoResponse { png(include_bytes!("../../web/icon-maskable-512.png")) }
+async fn favicon_png() -> impl IntoResponse { png(include_bytes!("../../web/favicon.png")) }
+
+fn png(bytes: &'static [u8]) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, CACHE_SEMINGGU)], bytes)
 }
 
 // ─── new debate + framing ────────────────────────────────────────────────────

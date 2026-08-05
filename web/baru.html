@@ -7,10 +7,18 @@
 <script>document.documentElement.dataset.theme=localStorage.getItem('tema')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')</script>
 <link rel="stylesheet" href="/style.css">
 <script src="/theme.js" defer></script>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#f7f5f0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1b1a17" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Timbang">
 </head>
 <body>
 <header class="top"><div class="wrap">
-  <h1>TIMBANG</h1>
+  <h1><svg class="mark" viewBox="0 0 100 100" aria-hidden="true"><defs><clipPath id="m"><rect width="100" height="100" rx="24"/></clipPath></defs><g clip-path="url(#m)"><rect width="100" height="100" fill="#1d4e6f"/><polygon points="100,0 100,100 0,100" fill="#7a2e2e"/><line x1="0" y1="100" x2="100" y2="0" stroke="#fff" stroke-width="7"/></g></svg><span>TIMBANG</span></h1>
   <nav><a href="/">Sidang baru</a><a href="/riwayat">Riwayat</a><a href="/setting">Setting</a><button id="tema" class="tema" type="button">☾ gelap</button></nav>
 </div></header>
 

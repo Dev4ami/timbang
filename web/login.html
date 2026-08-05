@@ -7,6 +7,13 @@
 <script>document.documentElement.dataset.theme=localStorage.getItem('tema')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')</script>
 <link rel="stylesheet" href="/style.css">
 <script src="/theme.js" defer></script>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#f7f5f0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1b1a17" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Timbang">
 <style>
   /* Login stands alone — no nav, no columns. A single card on the same paper as
      the rest, so it reads as the front door of the same document, not a new app. */
@@ -16,6 +23,7 @@
     background: var(--surface); border: 1px solid var(--line);
     border-radius: 4px; padding: 32px 28px;
   }
+  .kartu .logo { width: 44px; height: 44px; border-radius: 11px; display: block; margin: 0 0 14px; }
   .kartu h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: .04em; }
   .kartu p.sub { margin: 0 0 22px; color: var(--muted); font-size: 14px; }
   input[type=password] {
@@ -29,6 +37,7 @@
 </head>
 <body>
 <form class="kartu" method="post" action="/login">
+  <svg class="logo" viewBox="0 0 100 100" aria-hidden="true"><defs><clipPath id="m"><rect width="100" height="100" rx="24"/></clipPath></defs><g clip-path="url(#m)"><rect width="100" height="100" fill="#1d4e6f"/><polygon points="100,0 100,100 0,100" fill="#7a2e2e"/><line x1="0" y1="100" x2="100" y2="0" stroke="#fff" stroke-width="7"/></g></svg>
   <h1>TIMBANG</h1>
   <p class="sub">Alat debat antar-AI. Masukkan password untuk masuk.</p>
   <div class="err" id="err" hidden>Password salah, coba lagi.</div>

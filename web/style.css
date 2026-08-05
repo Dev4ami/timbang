@@ -60,8 +60,10 @@ header.top {
   border-bottom: 2px solid var(--ink);
   background: var(--paper);
 }
-header.top .wrap { padding: 14px 20px; display: flex; align-items: baseline; gap: 20px; }
-header.top h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
+header.top .wrap { padding: 14px 20px; display: flex; align-items: center; gap: 20px; }
+header.top h1 { font-size: 20px; margin: 0; letter-spacing: .5px; display: flex; align-items: center; gap: 9px; }
+/* The tile mark, sized to the wordmark's cap height. rx via the SVG itself. */
+header.top h1 .mark { width: 22px; height: 22px; border-radius: 6px; display: block; flex: none; }
 header.top nav { margin-left: auto; display: flex; gap: 18px; font-size: 15px; }
 header.top nav { align-items: baseline; }
 header.top nav a { color: var(--muted); text-decoration: none; transition: color .15s ease; }
